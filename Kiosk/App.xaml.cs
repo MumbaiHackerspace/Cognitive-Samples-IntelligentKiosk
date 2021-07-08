@@ -37,15 +37,18 @@ using Windows.ApplicationModel.Activation;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Navigation;
 
-// The Blank Application template is documented at http://go.microsoft.com/fwlink/?LinkId=402347&clcid=0x409
-
 namespace IntelligentKioskSample
 {
+    using IntelligentKioskSample.Views.DemoLauncher;
     using ServiceHelpers;
+    using System.Collections.Generic;
     using System.Diagnostics;
+    using System.Threading.Tasks;
     using Views;
     using Windows.Data.Xml.Dom;
     using Windows.UI.Notifications;
+    using Windows.UI.Popups;
+
     /// <summary>
     /// Provides application-specific behavior to supplement the default Application class.
     /// </summary>
@@ -59,6 +62,14 @@ namespace IntelligentKioskSample
         {
             this.InitializeComponent();
             this.Suspending += OnSuspending;
+            this.UnhandledException += App_UnhandledException;
+        }
+
+        private async void App_UnhandledException(object sender, Windows.UI.Xaml.UnhandledExceptionEventArgs e)
+        {
+            // handle exceptions so that we dont crash
+            e.Handled = true;
+            await new MessageDialog("Error:" + e.Message, "An unhandled error occurred").ShowAsync();
         }
 
         /// <summary>
@@ -86,22 +97,25 @@ namespace IntelligentKioskSample
                 SettingsHelper.Instance.SettingsChanged += (target, args) =>
                 {
                     FaceServiceHelper.ApiKey = SettingsHelper.Instance.FaceApiKey;
-                    FaceServiceHelper.ApiKeyRegion = SettingsHelper.Instance.FaceApiKeyRegion;
+                    FaceServiceHelper.ApiEndpoint = SettingsHelper.Instance.FaceApiKeyEndpoint;
                     VisionServiceHelper.ApiKey = SettingsHelper.Instance.VisionApiKey;
-                    VisionServiceHelper.ApiKeyRegion = SettingsHelper.Instance.VisionApiKeyRegion;
+                    VisionServiceHelper.ApiEndpoint = SettingsHelper.Instance.VisionApiKeyEndpoint;
                     BingSearchHelper.SearchApiKey = SettingsHelper.Instance.BingSearchApiKey;
-                    BingSearchHelper.AutoSuggestionApiKey = SettingsHelper.Instance.BingAutoSuggestionApiKey;
                     TextAnalyticsHelper.ApiKey = SettingsHelper.Instance.TextAnalyticsKey;
-                    TextAnalyticsHelper.ApiKeyRegion = SettingsHelper.Instance.TextAnalyticsApiKeyRegion;
+                    TextAnalyticsHelper.ApiEndpoint = SettingsHelper.Instance.TextAnalyticsApiKeyEndpoint;
                     TextAnalyticsHelper.ApiKey = SettingsHelper.Instance.TextAnalyticsKey;
                     ImageAnalyzer.PeopleGroupsUserDataFilter = SettingsHelper.Instance.WorkspaceKey;
                     FaceListManager.FaceListsUserDataFilter = SettingsHelper.Instance.WorkspaceKey;
                     CoreUtil.MinDetectableFaceCoveragePercentage = SettingsHelper.Instance.MinDetectableFaceCoveragePercentage;
+                    AnomalyDetectorHelper.ApiKey = SettingsHelper.Instance.AnomalyDetectorApiKey;
+                    AnomalyDetectorHelper.Endpoint = SettingsHelper.Instance.AnomalyDetectorKeyEndpoint;
+                    ReceiptOCRHelper.ApiKey = SettingsHelper.Instance.FormRecognizerApiKey;
+                    ReceiptOCRHelper.ApiEndpoint = SettingsHelper.Instance.FormRecognizerApiKeyEndpoint;
                 };
 
                 // callbacks for core library
-                FaceServiceHelper.Throttled = () => ShowThrottlingToast("Face");
-                VisionServiceHelper.Throttled = () => ShowThrottlingToast("Vision");
+                FaceServiceHelper.Throttled = () => ShowToastNotification("The Face API is throttling your requests. Consider upgrading to a Premium Key.");
+                VisionServiceHelper.Throttled = () => ShowToastNotification("The Vision API is throttling your requests. Consider upgrading to a Premium Key.");
                 ErrorTrackingHelper.TrackException = (ex, msg) => LogException(ex, msg);
                 ErrorTrackingHelper.GenericApiCallExceptionHandler = Util.GenericApiCallExceptionHandler;
 
@@ -114,19 +128,6 @@ namespace IntelligentKioskSample
                 shell.Language = Windows.Globalization.ApplicationLanguages.Languages[0];
 
                 shell.AppFrame.NavigationFailed += OnNavigationFailed;
-
-                if (e.PreviousExecutionState == ApplicationExecutionState.Terminated)
-                {
-                    //TODO: Load state from previously suspended application
-                }
-
-                // Set the TitleBar to Dark Theme
-                var appView = Windows.UI.ViewManagement.ApplicationView.GetForCurrentView();
-                var titleBar = appView.TitleBar;
-                titleBar.BackgroundColor = Windows.UI.Colors.Black;
-                titleBar.ForegroundColor = Windows.UI.Colors.White;
-                titleBar.ButtonBackgroundColor = Windows.UI.Colors.Black;
-                titleBar.ButtonForegroundColor = Windows.UI.Colors.White;
             }
 
             // Place our app shell in the current Window
@@ -136,20 +137,74 @@ namespace IntelligentKioskSample
             {
                 // When the navigation stack isn't restored, navigate to the first page
                 // suppressing the initial entrance animation.
-                shell.AppFrame.Navigate(typeof(LandingPage), e.Arguments, new Windows.UI.Xaml.Media.Animation.SuppressNavigationTransitionInfo());
+                shell.AppFrame.Navigate(typeof(DemoLauncherPage), e.Arguments, new Windows.UI.Xaml.Media.Animation.SuppressNavigationTransitionInfo());
             }
 
             // Ensure the current window is active
             Window.Current.Activate();
+
+            // Trigger a test of the api keys in the background to alert the user if any of them are bad (e.g. expired, out of quota, etc)
+            TestApiKeysAsync();
         }
 
-        private static void ShowThrottlingToast(string api)
+        private static async void TestApiKeysAsync()
+        {
+            List<Task> testTasks = new List<Task>
+            {
+                !string.IsNullOrEmpty(SettingsHelper.Instance.FaceApiKey)
+                ? CognitiveServiceApiKeyTester.TestFaceApiKeyAsync(SettingsHelper.Instance.FaceApiKey, SettingsHelper.Instance.FaceApiKeyEndpoint)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.VisionApiKey)
+                ? CognitiveServiceApiKeyTester.TestComputerVisionApiKeyAsync(SettingsHelper.Instance.VisionApiKey, SettingsHelper.Instance.VisionApiKeyEndpoint)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.CustomVisionTrainingApiKey)
+                ? CognitiveServiceApiKeyTester.TestCustomVisionTrainingApiKeyAsync(SettingsHelper.Instance.CustomVisionTrainingApiKey, SettingsHelper.Instance.CustomVisionTrainingApiKeyEndpoint)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.BingSearchApiKey)
+                ? CognitiveServiceApiKeyTester.TestBingSearchApiKeyAsync(SettingsHelper.Instance.BingSearchApiKey)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.TextAnalyticsKey)
+                ? CognitiveServiceApiKeyTester.TestTextAnalyticsApiKeyAsync(SettingsHelper.Instance.TextAnalyticsKey, SettingsHelper.Instance.TextAnalyticsApiKeyEndpoint)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.TranslatorTextApiKey)
+                ? CognitiveServiceApiKeyTester.TestTranslatorTextApiKeyAsync(SettingsHelper.Instance.TranslatorTextApiKey, SettingsHelper.Instance.TranslatorTextApiRegion)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.AnomalyDetectorApiKey)
+                ? CognitiveServiceApiKeyTester.TestAnomalyDetectorApiKeyAsync(SettingsHelper.Instance.AnomalyDetectorApiKey, SettingsHelper.Instance.AnomalyDetectorKeyEndpoint)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.SpeechApiKey)
+                ? CognitiveServiceApiKeyTester.TestSpeechApiKeyAsync(SettingsHelper.Instance.SpeechApiKey, SettingsHelper.Instance.SpeechApiEndpoint)
+                : Task.CompletedTask,
+
+                !string.IsNullOrEmpty(SettingsHelper.Instance.FormRecognizerApiKey)
+                ? CognitiveServiceApiKeyTester.TestFormRecognizerApiKeyAsync(SettingsHelper.Instance.FormRecognizerApiKey, SettingsHelper.Instance.FormRecognizerApiKeyEndpoint)
+                : Task.CompletedTask,
+            };
+
+            try
+            {
+                await Task.WhenAll(testTasks);
+            }
+            catch (Exception)
+            {
+                ShowToastNotification("Failure validating your API Keys. Please run the Key Validation Test in the Settings Page for more details.");
+            }
+        }
+
+        private static void ShowToastNotification(string errorMessage)
         {
             ToastTemplateType toastTemplate = ToastTemplateType.ToastText02;
             XmlDocument toastXml = ToastNotificationManager.GetTemplateContent(toastTemplate);
             XmlNodeList toastTextElements = toastXml.GetElementsByTagName("text");
-            toastTextElements[0].AppendChild(toastXml.CreateTextNode("Intelligent Kiosk"));
-            toastTextElements[1].AppendChild(toastXml.CreateTextNode("The " + api + " API is throttling your requests. Consider upgrading to a Premium Key."));
+            toastTextElements[0].AppendChild(toastXml.CreateTextNode("Intelligent Kiosk Sample"));
+            toastTextElements[1].AppendChild(toastXml.CreateTextNode(errorMessage));
 
             ToastNotification toast = new ToastNotification(toastXml);
             ToastNotificationManager.CreateToastNotifier().Show(toast);

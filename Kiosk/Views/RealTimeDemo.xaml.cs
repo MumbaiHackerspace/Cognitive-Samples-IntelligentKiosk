@@ -32,8 +32,7 @@
 // 
 
 using IntelligentKioskSample.Controls;
-using Microsoft.ProjectOxford.Common.Contract;
-using Microsoft.ProjectOxford.Face.Contract;
+using Microsoft.Azure.CognitiveServices.Vision.Face.Models;
 using ServiceHelpers;
 using System;
 using System.Collections.Generic;
@@ -47,26 +46,31 @@ using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Navigation;
 
-// The Blank Page item template is documented at http://go.microsoft.com/fwlink/?LinkId=234238
-
 namespace IntelligentKioskSample.Views
 {
-    /// <summary>
-    /// An empty page that can be used on its own or navigated to within a Frame.
-    /// </summary>
-    [KioskExperience(Title = "Realtime Crowd Insights", ImagePath = "ms-appx:/Assets/realtime.png", ExperienceType = ExperienceType.Kiosk)]
+    [KioskExperience(Id = "Real-time Kiosk",
+        DisplayName = "Realtime Crowd Insights",
+        Description = "Face analysis in near real-time from a camera stream",
+        ImagePath = "ms-appx:/Assets/DemoGallery/Realtime Crowd Insights.jpg",
+        ExperienceType = ExperienceType.Automated | ExperienceType.Business,
+        TechnologiesUsed = TechnologyType.Emotion | TechnologyType.Face,
+        TechnologyArea = TechnologyAreaType.Vision,
+        DateAdded = "2016/02/19")]
     public sealed partial class RealTimeDemo : Page, IRealTimeDataProvider
     {
         private Task processingLoopTask;
         private bool isProcessingLoopInProgress;
         private bool isProcessingPhoto;
 
-        private IEnumerable<Face> lastDetectedFaceSample;
-        private IEnumerable<Tuple<Face, IdentifiedPerson>> lastIdentifiedPersonSample;
+        private DateTime lastResultsTimestamp = DateTime.MinValue;
+        private IEnumerable<DetectedFace> lastDetectedFaceSample;
+        private IEnumerable<Tuple<DetectedFace, IdentifiedPerson>> lastIdentifiedPersonSample;
         private IEnumerable<SimilarFaceMatch> lastSimilarPersistedFaceSample;
 
         private DemographicsData demographics;
         private Dictionary<Guid, Visitor> visitors = new Dictionary<Guid, Visitor>();
+
+        public static bool ShowAgeAndGender { get { return SettingsHelper.Instance.ShowAgeAndGender; } }
 
         public RealTimeDemo()
         {
@@ -76,8 +80,9 @@ namespace IntelligentKioskSample.Views
 
             Window.Current.Activated += CurrentWindowActivationStateChanged;
             this.cameraControl.SetRealTimeDataProvider(this);
-            this.cameraControl.FilterOutSmallFaces = true;
+            this.cameraControl.FilterOutSmallFaces = false;
             this.cameraControl.HideCameraControls();
+            this.cameraControl.ShowDialogOnApiErrors = SettingsHelper.Instance.ShowDialogOnApiErrors;
             this.cameraControl.CameraAspectRatioChanged += CameraControl_CameraAspectRatioChanged;
         }
 
@@ -161,6 +166,8 @@ namespace IntelligentKioskSample.Views
             // Compute Face Identification and Unique Face Ids
             await Task.WhenAll(ComputeFaceIdentificationAsync(e), this.ComputeUniqueFaceIdAsync(e));
 
+            lastResultsTimestamp = DateTime.Now;
+
             this.UpdateDemographics(e);
             this.UpdateEmotionTimelineUI(e);
 
@@ -193,7 +200,7 @@ namespace IntelligentKioskSample.Views
             }
             else
             {
-                this.lastIdentifiedPersonSample = e.DetectedFaces.Select(f => new Tuple<Face, IdentifiedPerson>(f, e.IdentifiedPersons.FirstOrDefault(p => p.FaceId == f.FaceId)));
+                this.lastIdentifiedPersonSample = e.DetectedFaces.Select(f => new Tuple<DetectedFace, IdentifiedPerson>(f, e.IdentifiedPersons.FirstOrDefault(p => p.FaceId == f.FaceId)));
             }
         }
 
@@ -219,7 +226,7 @@ namespace IntelligentKioskSample.Views
             }
             else
             {
-                EmotionScores averageScores = new EmotionScores
+                Emotion averageScores = new Emotion
                 {
                     Happiness = e.DetectedFaces.Average(f => f.FaceAttributes.Emotion.Happiness),
                     Anger = e.DetectedFaces.Average(f => f.FaceAttributes.Emotion.Anger),
@@ -237,7 +244,7 @@ namespace IntelligentKioskSample.Views
 
         private void ShowTimelineFeedbackForNoFaces()
         {
-            this.emotionDataTimelineControl.DrawEmotionData(new EmotionScores { Neutral = 1 });
+            this.emotionDataTimelineControl.DrawEmotionData(new Emotion { Neutral = 1 });
         }
 
         protected override async void OnNavigatedTo(NavigationEventArgs e)
@@ -272,7 +279,8 @@ namespace IntelligentKioskSample.Views
                 foreach (var item in this.lastSimilarPersistedFaceSample)
                 {
                     Visitor visitor;
-                    if (this.visitors.TryGetValue(item.SimilarPersistedFace.PersistedFaceId, out visitor))
+                    Guid persistedFaceId = item.SimilarPersistedFace.PersistedFaceId.GetValueOrDefault();
+                    if (this.visitors.TryGetValue(persistedFaceId, out visitor))
                     {
                         visitor.Count++;
                     }
@@ -280,13 +288,13 @@ namespace IntelligentKioskSample.Views
                     {
                         demographicsChanged = true;
 
-                        visitor = new Visitor { UniqueId = item.SimilarPersistedFace.PersistedFaceId, Count = 1 };
+                        visitor = new Visitor { UniqueId = persistedFaceId, Count = 1 };
                         this.visitors.Add(visitor.UniqueId, visitor);
                         this.demographics.Visitors.Add(visitor);
 
                         // Update the demographics stats. We only do it for new visitors to avoid double counting. 
                         AgeDistribution genderBasedAgeDistribution = null;
-                        if (string.Compare(item.Face.FaceAttributes.Gender, "male", StringComparison.OrdinalIgnoreCase) == 0)
+                        if (item.Face.FaceAttributes.Gender == Gender.Male)
                         {
                             this.demographics.OverallMaleCount++;
                             genderBasedAgeDistribution = this.demographics.AgeGenderDistribution.MaleDistribution;
@@ -394,9 +402,9 @@ namespace IntelligentKioskSample.Views
             this.cameraHostGrid.Width = this.cameraHostGrid.ActualHeight * (this.cameraControl.CameraAspectRatio != 0 ? this.cameraControl.CameraAspectRatio : 1.777777777777);
         }
 
-        public Face GetLastFaceAttributesForFace(BitmapBounds faceBox)
+        public DetectedFace GetLastFaceAttributesForFace(BitmapBounds faceBox)
         {
-            if (this.lastDetectedFaceSample == null || !this.lastDetectedFaceSample.Any())
+            if (this.lastDetectedFaceSample == null || !this.lastDetectedFaceSample.Any() || !CanReuseCachedResults())
             {
                 return null;
             }
@@ -406,12 +414,12 @@ namespace IntelligentKioskSample.Views
 
         public IdentifiedPerson GetLastIdentifiedPersonForFace(BitmapBounds faceBox)
         {
-            if (this.lastIdentifiedPersonSample == null || !this.lastIdentifiedPersonSample.Any())
+            if (this.lastIdentifiedPersonSample == null || !this.lastIdentifiedPersonSample.Any() || !CanReuseCachedResults())
             {
                 return null;
             }
 
-            Tuple<Face, IdentifiedPerson> match =
+            Tuple<DetectedFace, IdentifiedPerson> match =
                 this.lastIdentifiedPersonSample.Where(f => Util.AreFacesPotentiallyTheSame(faceBox, f.Item1.FaceRectangle))
                                                .OrderBy(f => Math.Abs(faceBox.X - f.Item1.FaceRectangle.Left) + Math.Abs(faceBox.Y - f.Item1.FaceRectangle.Top)).FirstOrDefault();
             if (match != null)
@@ -422,9 +430,9 @@ namespace IntelligentKioskSample.Views
             return null;
         }
 
-        public SimilarPersistedFace GetLastSimilarPersistedFaceForFace(BitmapBounds faceBox)
+        public SimilarFace GetLastSimilarPersistedFaceForFace(BitmapBounds faceBox)
         {
-            if (this.lastSimilarPersistedFaceSample == null || !this.lastSimilarPersistedFaceSample.Any())
+            if (this.lastSimilarPersistedFaceSample == null || !this.lastSimilarPersistedFaceSample.Any() || !CanReuseCachedResults())
             {
                 return null;
             }
@@ -434,6 +442,11 @@ namespace IntelligentKioskSample.Views
                                                .OrderBy(f => Math.Abs(faceBox.X - f.Face.FaceRectangle.Left) + Math.Abs(faceBox.Y - f.Face.FaceRectangle.Top)).FirstOrDefault();
 
             return match?.SimilarPersistedFace;
+        }
+
+        private bool CanReuseCachedResults()
+        {
+            return (DateTime.Now - lastResultsTimestamp).TotalSeconds <= 3;
         }
     }
 

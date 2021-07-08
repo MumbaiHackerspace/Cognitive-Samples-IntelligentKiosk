@@ -1,27 +1,63 @@
-﻿using IntelligentKioskSample.Controls;
+﻿// 
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license.
+// 
+// Microsoft Cognitive Services: http://www.microsoft.com/cognitive
+// 
+// Microsoft Cognitive Services Github:
+// https://github.com/Microsoft/Cognitive
+// 
+// Copyright (c) Microsoft Corporation
+// All rights reserved.
+// 
+// MIT License:
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to
+// the following conditions:
+// 
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED ""AS IS"", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+// 
+
+using IntelligentKioskSample.Controls;
+using IntelligentKioskSample.Controls.Overlays;
+using IntelligentKioskSample.Controls.Overlays.Primitives;
 using IntelligentKioskSample.MallKioskPageConfig;
-using Microsoft.ProjectOxford.Common.Contract;
-using Microsoft.ProjectOxford.Face.Contract;
+using Microsoft.Azure.CognitiveServices.Vision.Face.Models;
 using ServiceHelpers;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
 using Windows.UI.Popups;
-using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
-// The Blank Page item template is documented at http://go.microsoft.com/fwlink/?LinkId=234238
-
 namespace IntelligentKioskSample.Views
 {
-    /// <summary>
-    /// An empty page that can be used on its own or navigated to within a Frame.
-    /// </summary>
-    [KioskExperience(Title = "Mall Kiosk", ImagePath = "ms-appx:/Assets/mall.png", ExperienceType = ExperienceType.Kiosk)]
+    [KioskExperience(Id = "MallKiosk",
+        DisplayName = "Mall Kiosk",
+        Description = "Get product suggestions from face and speech insights",
+        ImagePath = "ms-appx:/Assets/DemoGallery/Mall Kiosk.jpg",
+        ExperienceType = ExperienceType.Guided | ExperienceType.Business,
+        TechnologiesUsed = TechnologyType.Face | TechnologyType.Emotion | TechnologyType.SpeechToText | TechnologyType.TextAnalytics,
+        TechnologyArea = TechnologyAreaType.Vision | TechnologyAreaType.Speech | TechnologyAreaType.Language,
+        DateAdded = "2015/10/28")]
     public sealed partial class MallKioskPage : Page
     {
         private MallKioskDemoSettings kioskSettings;
@@ -35,10 +71,14 @@ namespace IntelligentKioskSample.Views
             this.cameraControl.ImageCaptured += CameraControl_ImageCaptured;
             this.cameraControl.CameraRestarted += CameraControl_CameraRestarted;
             this.cameraControl.FilterOutSmallFaces = true;
+            this.cameraControl.ShowDialogOnApiErrors = SettingsHelper.Instance.ShowDialogOnApiErrors;
 
             this.speechToTextControl.SpeechRecognitionAndSentimentProcessed += OnSpeechRecognitionAndSentimentProcessed;
 
             this.emotionFacesGrid.DataContext = this;
+
+            //databind settings
+            Settings.DataContext = SettingsHelper.Instance;
         }
 
         private async void CameraControl_CameraRestarted(object sender, EventArgs e)
@@ -54,9 +94,6 @@ namespace IntelligentKioskSample.Views
             // We induce a delay here to give the camera some time to start rendering before we hide the last captured photo.
             // This avoids a black flash.
             await Task.Delay(500);
-
-            this.imageFromCameraWithFaces.DataContext = null;
-            this.imageFromCameraWithFaces.Visibility = Visibility.Collapsed;
         }
 
         private void OnSpeechRecognitionAndSentimentProcessed(object sender, SpeechRecognitionAndSentimentResult e)
@@ -105,19 +142,26 @@ namespace IntelligentKioskSample.Views
 
         private async void CameraControl_ImageCaptured(object sender, ImageAnalyzer e)
         {
-            this.imageFromCameraWithFaces.DataContext = e;
-            this.imageFromCameraWithFaces.Visibility = Visibility.Visible;
-
-            // We induce a delay here to give the captured image some time to render before we hide the camera.
-            // This avoids a black flash.
-            await Task.Delay(50);
-
+            //detect age and person
+            var image = await e.GetImageSource();
+            OverlayPresenter.Source = image;
+            Overlays.ItemsSource = null;
             await this.cameraControl.StopStreamAsync();
-
-            e.FaceRecognitionCompleted += (s, args) =>
+            await e.DetectFacesAsync(true);
+            await e.IdentifyFacesAsync();
+            Overlays.ItemsSource = e.DetectedFaces.Select(i => new OverlayInfo<Object, AgeInfo>
             {
-                ShowRecommendations(e);
-            };
+                Rect = i.FaceRectangle.ToRect(),
+                LabelsExt = new[] { new AgeInfo()
+                {
+                    Age = (int)Math.Round(i.FaceAttributes.Age.GetValueOrDefault()),
+                    Gender = i.FaceAttributes.Gender.GetValueOrDefault() == Gender.Female ? AgeInfoGender.Female : AgeInfoGender.Male,
+                    Name = e.IdentifiedPersons.FirstOrDefault(t => i.FaceId == t.FaceId)?.Person?.Name,
+                    Confidence = e.IdentifiedPersons.FirstOrDefault(t => i.FaceId == t.FaceId)?.Confidence ?? 0
+                } }
+            }).ToArray();
+
+            ShowRecommendations(e);
         }
 
         protected override async void OnNavigatedTo(NavigationEventArgs e)
@@ -140,16 +184,20 @@ namespace IntelligentKioskSample.Views
                 this.kioskSettings = await MallKioskDemoSettings.FromFileAsync("Views\\MallKioskDemoConfig\\MallKioskDemoSettings.xml");
             }
 
-            EnterKioskMode();
-
-            if (string.IsNullOrEmpty(SettingsHelper.Instance.FaceApiKey))
+            if (!SettingsHelper.Instance.ShowAgeAndGender)
+            {
+                await new MessageDialog("To use this demo please enable Age and Gender prediction in the Settings screen.", "Age and Gender prediction is disabled").ShowAsync();
+            }
+            else if (string.IsNullOrEmpty(SettingsHelper.Instance.FaceApiKey))
             {
                 await new MessageDialog("Missing Face API Key. Please enter a key in the Settings page.", "Missing Face API Key").ShowAsync();
             }
-
-            await this.cameraControl.StartStreamAsync(isForRealTimeProcessing: true);
-            this.UpdateWebCamHostGridSize();
-            this.StartEmotionProcessingLoop();
+            else
+            {
+                await this.cameraControl.StartStreamAsync(isForRealTimeProcessing: true);
+                this.UpdateWebCamHostGridSize();
+                this.StartEmotionProcessingLoop();
+            }
 
             base.OnNavigatedTo(e);
         }
@@ -158,15 +206,6 @@ namespace IntelligentKioskSample.Views
         {
             this.webCamHostGrid.Width = Math.Round(this.ActualWidth * 0.25);
             this.webCamHostGrid.Height = Math.Round(this.webCamHostGrid.Width / (this.cameraControl.CameraAspectRatio != 0 ? this.cameraControl.CameraAspectRatio : 1.777777777777));
-        }
-
-        private void EnterKioskMode()
-        {
-            ApplicationView view = ApplicationView.GetForCurrentView();
-            if (!view.IsFullScreenMode)
-            {
-                view.TryEnterFullScreenMode();
-            }
         }
 
         protected override async void OnNavigatingFrom(NavigatingCancelEventArgs e)
@@ -197,8 +236,11 @@ namespace IntelligentKioskSample.Views
                 {
                     // Didn't find a personalized recommendation (or we don't have anyone recognized), so default to 
                     // the age/gender-based generic recommendation
-                    Face face = imageWithFaces.DetectedFaces.First();
-                    recommendation = this.kioskSettings.GetGenericRecommendationForPerson((int)face.FaceAttributes.Age, face.FaceAttributes.Gender);
+                    DetectedFace face = imageWithFaces.DetectedFaces.First();
+                    if (face?.FaceAttributes != null)
+                    {
+                        recommendation = this.kioskSettings.GetGenericRecommendationForPerson((int)face.FaceAttributes.Age.GetValueOrDefault(), face.FaceAttributes.Gender);
+                    }
                 }
             }
             else if (numberOfPeople > 1 && imageWithFaces.DetectedFaces.Any(f => f.FaceAttributes.Age <= 12) &&
@@ -271,7 +313,7 @@ namespace IntelligentKioskSample.Views
                         }
                         else
                         {
-                            await this.ProcessCameraCapture(await this.cameraControl.CaptureFrameAsync());
+                            await this.ProcessCameraCapture(await this.cameraControl.TakeAutoCapturePhoto());
                         }
                     }
                 });
@@ -288,13 +330,13 @@ namespace IntelligentKioskSample.Views
                 return;
             }
 
-            // detect emotions
             await e.DetectFacesAsync(detectFaceAttributes: true);
 
+            // Analyze emotions
             if (e.DetectedFaces.Any())
             {
                 // Update the average emotion response
-                EmotionScores averageScores = new EmotionScores
+                Emotion averageScores = new Emotion
                 {
                     Happiness = e.DetectedFaces.Average(f => f.FaceAttributes.Emotion.Happiness),
                     Anger = e.DetectedFaces.Average(f => f.FaceAttributes.Emotion.Anger),
@@ -315,10 +357,10 @@ namespace IntelligentKioskSample.Views
                 // show captured faces and their emotion
                 if (this.emotionFacesGrid.Visibility == Visibility.Visible)
                 {
-                    foreach (var face in e.DetectedFaces)
+                    foreach (DetectedFace face in e.DetectedFaces)
                     {
                         // Get top emotion on this face
-                        var topEmotion = face.FaceAttributes.Emotion.ToRankedList().First();
+                        KeyValuePair<string, double> topEmotion = Util.EmotionToRankedList(face.FaceAttributes.Emotion).First();
 
                         // Crop this face
                         FaceRectangle rect = face.FaceRectangle;
@@ -332,7 +374,7 @@ namespace IntelligentKioskSample.Views
                         biggerRectangle.Left = Math.Max(0, rect.Left - (int)(rect.Width * ((widthScaleFactor - 1) / 2)));
                         biggerRectangle.Top = Math.Max(0, rect.Top - (int)(rect.Height * ((heightScaleFactor - 1) / 1.4)));
 
-                        ImageSource croppedImage = await Util.GetCroppedBitmapAsync(e.GetImageStreamCallback, biggerRectangle);
+                        ImageSource croppedImage = await Util.GetCroppedBitmapAsync(e.GetImageStreamCallback, biggerRectangle.ToRect());
 
                         // Add the face and emotion to the collection of faces
                         if (croppedImage != null && biggerRectangle.Height > 0 && biggerRectangle.Width > 0)
@@ -361,6 +403,11 @@ namespace IntelligentKioskSample.Views
         private void OnEmotionFacesToggleChecked(object sender, RoutedEventArgs e)
         {
             emotionFacesGrid.Visibility = Visibility.Visible;
+        }
+
+        private void ResetMallKioskSettingsButtonClick(object sender, RoutedEventArgs e)
+        {
+            SettingsHelper.Instance.RestoreMallKioskSettingsToDefaultFile();
         }
     }
 

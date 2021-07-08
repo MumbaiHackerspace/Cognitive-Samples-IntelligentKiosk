@@ -44,8 +44,14 @@ using Windows.UI.Xaml.Navigation;
 
 namespace IntelligentKioskSample.Views
 {
-
-    [KioskExperience(Title = "Greeting Kiosk", ImagePath = "ms-appx:/Assets/GreetingKiosk.jpg", ExperienceType = ExperienceType.Kiosk)]
+    [KioskExperience(Id = "GreetingKiosk",
+         DisplayName = "Greeting Kiosk",
+         Description = "Greet people by name using facial recognition",
+         ImagePath = "ms-appx:/Assets/DemoGallery/Greeting Kiosk.jpg",
+         ExperienceType = ExperienceType.Guided | ExperienceType.Business,
+         TechnologiesUsed = TechnologyType.Face,
+         TechnologyArea = TechnologyAreaType.Vision,
+         DateAdded = "2017/01/27")]
     public sealed partial class GreetingKiosk : Page
     {
         private Task processingLoopTask;
@@ -59,6 +65,7 @@ namespace IntelligentKioskSample.Views
             Window.Current.Activated += CurrentWindowActivationStateChanged;
             this.cameraControl.FilterOutSmallFaces = true;
             this.cameraControl.HideCameraControls();
+            this.cameraControl.ShowDialogOnApiErrors = SettingsHelper.Instance.ShowDialogOnApiErrors;
             this.cameraControl.CameraAspectRatioChanged += CameraControl_CameraAspectRatioChanged;
         }
 

@@ -31,27 +31,39 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using Microsoft.ProjectOxford.Common.Contract;
-using Microsoft.ProjectOxford.Face;
-using Microsoft.ProjectOxford.Face.Contract;
-using Microsoft.ProjectOxford.Vision;
+using Microsoft.Azure.CognitiveServices.Vision.ComputerVision.Models;
+using Microsoft.Azure.CognitiveServices.Vision.Face.Models;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Windows.UI.Xaml.Media;
+using Windows.UI.Xaml.Media.Imaging;
 
 namespace ServiceHelpers
 {
-    public class ImageAnalyzer
+    public partial class ImageAnalyzer
     {
-        private static FaceAttributeType[] DefaultFaceAttributeTypes = new FaceAttributeType[] { FaceAttributeType.Age, FaceAttributeType.Gender, FaceAttributeType.HeadPose, FaceAttributeType.Emotion };
-        private static VisualFeature[] DefaultVisualFeatures = new VisualFeature[] { VisualFeature.Tags, VisualFeature.Faces, VisualFeature.Categories, VisualFeature.Description, VisualFeature.Color };
-
-        public event EventHandler FaceDetectionCompleted;
-        public event EventHandler FaceRecognitionCompleted;
-        public event EventHandler ComputerVisionAnalysisCompleted;
-        public event EventHandler OcrAnalysisCompleted;
+        private static readonly FaceAttributeType[] DefaultFaceAttributeTypes = new FaceAttributeType[]
+        {
+            FaceAttributeType.Age,
+            FaceAttributeType.Gender,
+            FaceAttributeType.HeadPose,
+            FaceAttributeType.Emotion
+        };
+        private static readonly List<VisualFeatureTypes?> DefaultVisualFeatures = new List<VisualFeatureTypes?>()
+        {
+            VisualFeatureTypes.Tags,
+            VisualFeatureTypes.Faces,
+            VisualFeatureTypes.Categories,
+            VisualFeatureTypes.Description,
+            VisualFeatureTypes.Color,
+            VisualFeatureTypes.Brands,
+            VisualFeatureTypes.Adult,
+            VisualFeatureTypes.ImageType,
+            VisualFeatureTypes.Objects
+        };
 
         public static string PeopleGroupsUserDataFilter = null;
 
@@ -59,14 +71,15 @@ namespace ServiceHelpers
         public string LocalImagePath { get; set; }
         public string ImageUrl { get; set; }
 
-        public IEnumerable<Face> DetectedFaces { get; set; }
+        public IEnumerable<DetectedFace> DetectedFaces { get; set; }
 
         public IEnumerable<IdentifiedPerson> IdentifiedPersons { get; set; }
 
         public IEnumerable<SimilarFaceMatch> SimilarFaceMatches { get; set; }
 
-        public Microsoft.ProjectOxford.Vision.Contract.AnalysisResult AnalysisResult { get; set; }
-        public Microsoft.ProjectOxford.Vision.Contract.OcrResults OcrResults { get; set; }
+        public ImageAnalysis AnalysisResult { get; set; }
+        public ImageDescription ImageDescription { get; set; }
+        public ReadResult TextOperationResult { get; set; }
 
         // Default to no errors, since this could trigger a stream of popup errors since we might call this
         // for several images at once while auto-detecting the Bing Image Search results.
@@ -101,25 +114,44 @@ namespace ServiceHelpers
             this.DecodedImageWidth = width;
         }
 
-        public async Task DetectFacesAsync(bool detectFaceAttributes = false, bool detectFaceLandmarks = false)
+        public async Task<ImageSource> GetImageSource()
+        {
+            //get image from url
+            if (ImageUrl != null)
+            {
+                return new BitmapImage(new Uri(ImageUrl));
+            }
+
+            //get image from stream
+            else if (GetImageStreamCallback != null)
+            {
+                var bitmap = new BitmapImage();
+                await bitmap.SetSourceAsync((await GetImageStreamCallback()).AsRandomAccessStream());
+                return bitmap;
+            }
+
+            return null;
+        }
+
+        public async Task DetectFacesAsync(bool detectFaceAttributes = false, bool detectFaceLandmarks = false, FaceAttributeType[] faceAttributeTypes = null)
         {
             try
             {
                 if (this.ImageUrl != null)
                 {
-                    this.DetectedFaces = await FaceServiceHelper.DetectAsync(
+                    this.DetectedFaces = await FaceServiceHelper.DetectWithUrlAsync(
                         this.ImageUrl,
                         returnFaceId: true,
                         returnFaceLandmarks: detectFaceLandmarks,
-                        returnFaceAttributes: detectFaceAttributes ? DefaultFaceAttributeTypes : null);
+                        returnFaceAttributes: detectFaceAttributes ? faceAttributeTypes ?? DefaultFaceAttributeTypes : null);
                 }
                 else if (this.GetImageStreamCallback != null)
                 {
-                    this.DetectedFaces = await FaceServiceHelper.DetectAsync(
+                    this.DetectedFaces = await FaceServiceHelper.DetectWithStreamAsync(
                         this.GetImageStreamCallback,
                         returnFaceId: true,
                         returnFaceLandmarks: detectFaceLandmarks,
-                        returnFaceAttributes: detectFaceAttributes ? DefaultFaceAttributeTypes : null);
+                        returnFaceAttributes: detectFaceAttributes ? faceAttributeTypes ?? DefaultFaceAttributeTypes : null);
                 }
 
                 if (this.FilterOutSmallFaces)
@@ -131,16 +163,12 @@ namespace ServiceHelpers
             {
                 ErrorTrackingHelper.TrackException(e, "Face API DetectAsync error");
 
-                this.DetectedFaces = Enumerable.Empty<Face>();
+                this.DetectedFaces = Enumerable.Empty<DetectedFace>();
 
                 if (this.ShowDialogOnFaceApiErrors)
                 {
-                    await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Face detection failed.");
+                    await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Face API failed.");
                 }
-            }
-            finally
-            {
-                this.OnFaceDetectionCompleted();
             }
         }
 
@@ -150,16 +178,20 @@ namespace ServiceHelpers
             {
                 if (this.ImageUrl != null)
                 {
-                    this.AnalysisResult = await VisionServiceHelper.DescribeAsync(this.ImageUrl);
+                    this.ImageDescription = await VisionServiceHelper.DescribeAsync(this.ImageUrl);
+                    this.AnalysisResult = GetAnalysisResult(this.ImageDescription);
                 }
                 else if (this.GetImageStreamCallback != null)
                 {
-                    this.AnalysisResult = await VisionServiceHelper.DescribeAsync(this.GetImageStreamCallback);
+                    this.ImageDescription = await VisionServiceHelper.DescribeAsync(this.GetImageStreamCallback);
+                    this.AnalysisResult = GetAnalysisResult(this.ImageDescription);
                 }
             }
             catch (Exception e)
             {
-                this.AnalysisResult = new Microsoft.ProjectOxford.Vision.Contract.AnalysisResult();
+                ErrorTrackingHelper.TrackException(e, "Vision API DescribeAsync error");
+
+                this.AnalysisResult = new ImageAnalysis();
 
                 if (this.ShowDialogOnFaceApiErrors)
                 {
@@ -178,14 +210,17 @@ namespace ServiceHelpers
                 }
                 else if (this.GetImageStreamCallback != null)
                 {
-                    this.AnalysisResult = await VisionServiceHelper.AnalyzeImageAsync(this.GetImageStreamCallback, new VisualFeature[] { VisualFeature.Categories }, new string[] { "Celebrities" });
+                    this.AnalysisResult = await VisionServiceHelper.AnalyzeImageAsync(
+                        this.GetImageStreamCallback,
+                        new List<VisualFeatureTypes?>() { VisualFeatureTypes.Categories },
+                        new List<Details?>() { Details.Celebrities });
                 }
             }
             catch (Exception e)
             {
                 ErrorTrackingHelper.TrackException(e, "Vision API AnalyzeImageAsync error");
 
-                this.AnalysisResult = new Microsoft.ProjectOxford.Vision.Contract.AnalysisResult();
+                this.AnalysisResult = new ImageAnalysis();
 
                 if (this.ShowDialogOnFaceApiErrors)
                 {
@@ -194,7 +229,7 @@ namespace ServiceHelpers
             }
         }
 
-        public async Task AnalyzeImageAsync(bool detectCelebrities = false, IEnumerable<VisualFeature> visualFeatures = null)
+        public async Task AnalyzeImageAsync(IList<Details?> details = null, IList<VisualFeatureTypes?> visualFeatures = null)
         {
             try
             {
@@ -208,29 +243,26 @@ namespace ServiceHelpers
                     this.AnalysisResult = await VisionServiceHelper.AnalyzeImageAsync(
                         this.ImageUrl,
                         visualFeatures,
-                        detectCelebrities ? new string[] { "Celebrities" } : null);
+                        details);
                 }
                 else if (this.GetImageStreamCallback != null)
                 {
                     this.AnalysisResult = await VisionServiceHelper.AnalyzeImageAsync(
                         this.GetImageStreamCallback,
                         visualFeatures,
-                        detectCelebrities ? new string[] { "Celebrities" } : null);
+                        details);
                 }
             }
             catch (Exception e)
             {
+                ErrorTrackingHelper.TrackException(e, "Vision API AnalyzeImageAsync error");
 
-                this.AnalysisResult = new Microsoft.ProjectOxford.Vision.Contract.AnalysisResult();
+                this.AnalysisResult = new ImageAnalysis();
 
                 if (this.ShowDialogOnFaceApiErrors)
                 {
                     await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Vision API failed.");
                 }
-            }
-            finally
-            {
-                this.ComputerVisionAnalysisCompleted?.Invoke(this, EventArgs.Empty);
             }
         }
 
@@ -240,26 +272,23 @@ namespace ServiceHelpers
             {
                 if (this.ImageUrl != null)
                 {
-                    this.OcrResults = await VisionServiceHelper.RecognizeTextAsync(this.ImageUrl);
+                    this.TextOperationResult = (await VisionServiceHelper.ReadFileAsync(this.ImageUrl))?.ReadResults?.FirstOrDefault();
                 }
                 else if (this.GetImageStreamCallback != null)
                 {
-                    this.OcrResults = await VisionServiceHelper.RecognizeTextAsync(this.GetImageStreamCallback);
+                    this.TextOperationResult = (await VisionServiceHelper.ReadFileAsync(this.GetImageStreamCallback))?.ReadResults?.FirstOrDefault();
                 }
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
+                ErrorTrackingHelper.TrackException(ex, "Vision API RecognizeTextAsync error");
 
-                this.OcrResults = new Microsoft.ProjectOxford.Vision.Contract.OcrResults();
+                this.TextOperationResult = new ReadResult();
 
                 if (this.ShowDialogOnFaceApiErrors)
                 {
-                    await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Vision API failed.");
+                    await ErrorTrackingHelper.GenericApiCallExceptionHandler(ex, "Vision API failed.");
                 }
-            }
-            finally
-            {
-                this.OcrAnalysisCompleted?.Invoke(this, EventArgs.Empty);
             }
         }
 
@@ -267,74 +296,83 @@ namespace ServiceHelpers
         {
             this.IdentifiedPersons = Enumerable.Empty<IdentifiedPerson>();
 
-            Guid[] detectedFaceIds = this.DetectedFaces?.Select(f => f.FaceId).ToArray();
+            Guid[] detectedFaceIds = this.DetectedFaces?.Where(f => f.FaceId.HasValue).Select(f => f.FaceId.GetValueOrDefault()).ToArray();
             if (detectedFaceIds != null && detectedFaceIds.Any())
             {
                 List<IdentifiedPerson> result = new List<IdentifiedPerson>();
 
-                IEnumerable<PersonGroup> personGroups = Enumerable.Empty<PersonGroup>();
-                try
+                var personGroupResultTasks = new List<Tuple<string, Task<IList<IdentifyResult>>>>();
+                IEnumerable<PersonGroup> personGroups = await GetPersonGroupsAsync();
+                foreach (PersonGroup group in personGroups)
                 {
-                    personGroups = await FaceServiceHelper.GetPersonGroupsAsync(PeopleGroupsUserDataFilter);
-                }
-                catch (Exception e)
-                {
-                    ErrorTrackingHelper.TrackException(e, "Face API GetPersonGroupsAsync error");
-
-                    if (this.ShowDialogOnFaceApiErrors)
-                    {
-                        await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Failure getting PersonGroups");
-                    }
+                    personGroupResultTasks.Add(new Tuple<string, Task<IList<IdentifyResult>>>(group.PersonGroupId, GetFaceIdentificationResultsOrDefaultAsync(group.PersonGroupId, detectedFaceIds)));
                 }
 
-                foreach (var group in personGroups)
+                // identify detected faces using person groups
+                await Task.WhenAll(personGroupResultTasks.Select(x => x.Item2));
+
+                // check matches
+                foreach (var group in personGroupResultTasks)
                 {
-                    try
+                    foreach (IdentifyResult match in group.Item2.Result)
                     {
-                        IdentifyResult[] groupResults = await FaceServiceHelper.IdentifyAsync(group.PersonGroupId, detectedFaceIds);
-                        foreach (var match in groupResults)
+                        if (!match.Candidates.Any())
                         {
-                            if (!match.Candidates.Any())
-                            {
-                                continue;
-                            }
+                            continue;
+                        }
 
-                            Person person = await FaceServiceHelper.GetPersonAsync(group.PersonGroupId, match.Candidates[0].PersonId);
+                        Person person = null;
+                        try
+                        {
+                            person = await FaceServiceHelper.GetPersonAsync(group.Item1, match.Candidates[0].PersonId);
+                        }
+                        catch { /* Ignore errors */ }
 
-                            IdentifiedPerson alreadyIdentifiedPerson = result.FirstOrDefault(p => p.Person.PersonId == match.Candidates[0].PersonId);
-                            if (alreadyIdentifiedPerson != null)
+                        if (person == null)
+                        {
+                            continue;
+                        }
+
+                        IdentifiedPerson alreadyIdentifiedPerson = result.FirstOrDefault(p => p.Person.PersonId == match.Candidates[0].PersonId);
+                        if (alreadyIdentifiedPerson != null)
+                        {
+                            // We already tagged this person in another group. Replace the existing one if this new one if the confidence is higher.
+                            if (alreadyIdentifiedPerson.Confidence < match.Candidates[0].Confidence)
                             {
-                                // We already tagged this person in another group. Replace the existing one if this new one if the confidence is higher.
-                                if (alreadyIdentifiedPerson.Confidence < match.Candidates[0].Confidence)
-                                {
-                                    alreadyIdentifiedPerson.Person = person;
-                                    alreadyIdentifiedPerson.Confidence = match.Candidates[0].Confidence;
-                                    alreadyIdentifiedPerson.FaceId = match.FaceId;
-                                }
-                            }
-                            else
-                            {
-                                result.Add(new IdentifiedPerson { Person = person, Confidence = match.Candidates[0].Confidence, FaceId = match.FaceId });
+                                alreadyIdentifiedPerson.Person = person;
+                                alreadyIdentifiedPerson.Confidence = match.Candidates[0].Confidence;
+                                alreadyIdentifiedPerson.FaceId = match.FaceId;
                             }
                         }
-                    }
-                    catch (Exception e)
-                    {
-                        // Catch errors with individual groups so we can continue looping through all groups. Maybe an answer will come from
-                        // another one.
-                        ErrorTrackingHelper.TrackException(e, "Face API IdentifyAsync error");
-
-                        if (this.ShowDialogOnFaceApiErrors)
+                        else
                         {
-                            await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Failure identifying faces");
+                            result.Add(new IdentifiedPerson { Person = person, Confidence = match.Candidates[0].Confidence, FaceId = match.FaceId });
                         }
                     }
                 }
 
                 this.IdentifiedPersons = result;
             }
+        }
 
-            this.OnFaceRecognitionCompleted();
+        private async Task<IList<IdentifyResult>> GetFaceIdentificationResultsOrDefaultAsync(string personGroupId, Guid[] detectedFaceIds)
+        {
+            try
+            {
+                return await FaceServiceHelper.IdentifyAsync(personGroupId, detectedFaceIds);
+            }
+            catch (Exception e)
+            {
+                // Catch errors with individual groups so we can continue looping through all groups. Maybe an answer will come from
+                // another one.
+                ErrorTrackingHelper.TrackException(e, "Face API IdentifyAsync error");
+
+                if (this.ShowDialogOnFaceApiErrors)
+                {
+                    await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Failure identifying faces");
+                }
+            }
+            return new List<IdentifyResult>();
         }
 
         public async Task FindSimilarPersistedFacesAsync()
@@ -348,11 +386,19 @@ namespace ServiceHelpers
 
             List<SimilarFaceMatch> result = new List<SimilarFaceMatch>();
 
-            foreach (Face detectedFace in this.DetectedFaces)
+            foreach (DetectedFace detectedFace in this.DetectedFaces)
             {
                 try
                 {
-                    SimilarPersistedFace similarPersistedFace = await FaceListManager.FindSimilarPersistedFaceAsync(this.GetImageStreamCallback, detectedFace.FaceId, detectedFace);
+                    SimilarFace similarPersistedFace = null;
+                    if (this.ImageUrl != null)
+                    {
+                        similarPersistedFace = await FaceListManager.FindSimilarPersistedFaceAsync(ImageUrl, detectedFace.FaceId.GetValueOrDefault(), detectedFace);
+                    }
+                    else
+                    {
+                        similarPersistedFace = await FaceListManager.FindSimilarPersistedFaceAsync(this.GetImageStreamCallback, detectedFace.FaceId.GetValueOrDefault(), detectedFace);
+                    }
                     if (similarPersistedFace != null)
                     {
                         result.Add(new SimilarFaceMatch { Face = detectedFace, SimilarPersistedFace = similarPersistedFace });
@@ -372,23 +418,37 @@ namespace ServiceHelpers
             this.SimilarFaceMatches = result;
         }
 
-        private void OnFaceDetectionCompleted()
+        private ImageAnalysis GetAnalysisResult(ImageDescription imageDescription)
         {
-            if (this.FaceDetectionCompleted != null)
+            return new ImageAnalysis()
             {
-                this.FaceDetectionCompleted(this, EventArgs.Empty);
-            }
+                RequestId = imageDescription.RequestId,
+                Metadata = imageDescription.Metadata,
+                Description = new ImageDescriptionDetails(imageDescription.Tags, imageDescription.Captions)
+            };
         }
 
-        private void OnFaceRecognitionCompleted()
+        private async Task<IEnumerable<PersonGroup>> GetPersonGroupsAsync()
         {
-            if (this.FaceRecognitionCompleted != null)
+            IEnumerable<PersonGroup> personGroups = Enumerable.Empty<PersonGroup>();
+            try
             {
-                this.FaceRecognitionCompleted(this, EventArgs.Empty);
+                personGroups = (await FaceServiceHelper.ListPersonGroupsAsync(PeopleGroupsUserDataFilter))
+                    .Where(x => x.RecognitionModel.Equals(FaceServiceHelper.LatestRecognitionModelName, StringComparison.OrdinalIgnoreCase));
             }
+            catch (Exception e)
+            {
+                ErrorTrackingHelper.TrackException(e, "Face API GetPersonGroupsAsync error");
+
+                if (this.ShowDialogOnFaceApiErrors)
+                {
+                    await ErrorTrackingHelper.GenericApiCallExceptionHandler(e, "Failure getting PersonGroups");
+                }
+            }
+            return personGroups;
         }
+
     }
-
 
     public class IdentifiedPerson
     {
@@ -410,12 +470,12 @@ namespace ServiceHelpers
 
     public class SimilarFaceMatch
     {
-        public Face Face
+        public DetectedFace Face
         {
             get; set;
         }
 
-        public SimilarPersistedFace SimilarPersistedFace
+        public SimilarFace SimilarPersistedFace
         {
             get; set;
         }

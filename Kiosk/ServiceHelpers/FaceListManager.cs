@@ -31,17 +31,17 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using Microsoft.ProjectOxford.Face;
-using Microsoft.ProjectOxford.Face.Contract;
+using Microsoft.Azure.CognitiveServices.Vision.Face.Models;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ServiceHelpers
 {
-    internal class FaceListInfo
+    class FaceListInfo
     {
         public string FaceListId { get; set; }
         public DateTime LastMatchTimestamp { get; set; }
@@ -50,7 +50,9 @@ namespace ServiceHelpers
 
     public class FaceListManager
     {
+        private const int MaxFaceListCount = 64;
         private static Dictionary<string, FaceListInfo> faceLists;
+        private static readonly SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
 
         public static string FaceListsUserDataFilter { get; set; }
 
@@ -62,7 +64,7 @@ namespace ServiceHelpers
 
             try
             {
-                IEnumerable<FaceListMetadata> metadata = await FaceServiceHelper.GetFaceListsAsync(FaceListsUserDataFilter);
+                IEnumerable<FaceList> metadata = await FaceServiceHelper.GetFaceListsAsync(FaceListsUserDataFilter);
                 foreach (var item in metadata)
                 {
                     await FaceServiceHelper.DeleteFaceListAsync(item.FaceListId);
@@ -80,7 +82,7 @@ namespace ServiceHelpers
 
             try
             {
-                IEnumerable<FaceListMetadata> metadata = await FaceServiceHelper.GetFaceListsAsync(FaceListsUserDataFilter);
+                IEnumerable<FaceList> metadata = await FaceServiceHelper.GetFaceListsAsync(FaceListsUserDataFilter);
                 foreach (var item in metadata)
                 {
                     faceLists.Add(item.FaceListId, new FaceListInfo { FaceListId = item.FaceListId, LastMatchTimestamp = DateTime.Now });
@@ -92,21 +94,44 @@ namespace ServiceHelpers
             }
         }
 
-        public static async Task<SimilarPersistedFace> FindSimilarPersistedFaceAsync(Func<Task<Stream>> imageStreamCallback, Guid faceId, Face face)
+        public static Task<SimilarFace> FindSimilarPersistedFaceAsync(string imageUrl, Guid faceId, DetectedFace face)
+        {
+            return FindSimilarPersistedFaceAsync(imageUrl, null, faceId, face);
+        }
+
+        public static Task<SimilarFace> FindSimilarPersistedFaceAsync(Func<Task<Stream>> imageStreamCallback, Guid faceId, DetectedFace face)
+        {
+            return FindSimilarPersistedFaceAsync(null, imageStreamCallback, faceId, face);
+        }
+
+        private static async Task<SimilarFace> FindSimilarPersistedFaceAsync(string imageUrl, Func<Task<Stream>> imageStreamCallback, Guid faceId, DetectedFace face)
+        {
+            await semaphore.WaitAsync();
+            try
+            {
+                return await FindSimilarOrInsertAsync(imageUrl, imageStreamCallback, faceId, face);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        private static async Task<SimilarFace> FindSimilarOrInsertAsync(string imageUrl, Func<Task<Stream>> imageStreamCallback, Guid faceId, DetectedFace face)
         {
             if (faceLists == null)
             {
                 await Initialize();
             }
 
-            Tuple<SimilarPersistedFace, string> bestMatch = null;
+            Tuple<SimilarFace, string> bestMatch = null;
 
             bool foundMatch = false;
             foreach (var faceListId in faceLists.Keys)
             {
                 try
                 {
-                    SimilarPersistedFace similarFace = (await FaceServiceHelper.FindSimilarAsync(faceId, faceListId))?.FirstOrDefault();
+                    SimilarFace similarFace = (await FaceServiceHelper.FindSimilarAsync(faceId, faceListId))?.FirstOrDefault();
                     if (similarFace == null)
                     {
                         continue;
@@ -119,12 +144,12 @@ namespace ServiceHelpers
                         // We already found a match for this face in another list. Replace the previous one if the new confidence is higher.
                         if (bestMatch.Item1.Confidence < similarFace.Confidence)
                         {
-                            bestMatch = new Tuple<SimilarPersistedFace, string>(similarFace, faceListId);
+                            bestMatch = new Tuple<SimilarFace, string>(similarFace, faceListId);
                         }
                     }
                     else
                     {
-                        bestMatch = new Tuple<SimilarPersistedFace, string>(similarFace, faceListId);
+                        bestMatch = new Tuple<SimilarFace, string>(similarFace, faceListId);
                     }
                 }
                 catch (Exception e)
@@ -139,7 +164,7 @@ namespace ServiceHelpers
             {
                 // If we are here we didnt' find a match, so let's add the face to the first FaceList that we can add it to. We
                 // might create a new list if none exist, and if all lists are full we will delete the oldest face list (based on when we  
-                // last matched anything on it) so that we can add the new one.
+                // last match anything on) so that we can add the new one.
 
                 double maxAngle = 30;
                 if (face.FaceAttributes.HeadPose != null &&
@@ -160,7 +185,7 @@ namespace ServiceHelpers
                     faceLists.Add(newFaceListId, new FaceListInfo { FaceListId = newFaceListId, LastMatchTimestamp = DateTime.Now });
                 }
 
-                AddPersistedFaceResult addResult = null;
+                PersistedFace addResult = null;
                 bool failedToAddToNonFullList = false;
                 foreach (var faceList in faceLists)
                 {
@@ -171,12 +196,19 @@ namespace ServiceHelpers
 
                     try
                     {
-                        addResult = await FaceServiceHelper.AddFaceToFaceListAsync(faceList.Key, imageStreamCallback, face.FaceRectangle);
+                        if (imageUrl != null)
+                        {
+                            addResult = await FaceServiceHelper.AddFaceToFaceListFromUrlAsync(faceList.Key, imageUrl, face.FaceRectangle);
+                        }
+                        else
+                        {
+                            addResult = await FaceServiceHelper.AddFaceToFaceListFromStreamAsync(faceList.Key, imageStreamCallback, face.FaceRectangle);
+                        }
                         break;
                     }
                     catch (Exception ex)
                     {
-                        if (ex is FaceAPIException && ((FaceAPIException)ex).ErrorCode == "403")
+                        if (ex is APIErrorException && ((APIErrorException)ex).Response.StatusCode == (System.Net.HttpStatusCode)403)
                         {
                             // FaceList is full. Continue so we can try again with the next FaceList
                             faceList.Value.IsFull = true;
@@ -197,7 +229,7 @@ namespace ServiceHelpers
                     // If possible, let's create a new list now and add the new face to it. If we can't (e.g. we already maxed out on list count), 
                     // let's delete an old list, create a new one and add the new face to it.
 
-                    if (faceLists.Count == 64)
+                    if (faceLists.Count == MaxFaceListCount)
                     {
                         // delete oldest face list
                         var oldestFaceList = faceLists.OrderBy(fl => fl.Value.LastMatchTimestamp).FirstOrDefault();
@@ -211,12 +243,19 @@ namespace ServiceHelpers
                     faceLists.Add(newFaceListId, new FaceListInfo { FaceListId = newFaceListId, LastMatchTimestamp = DateTime.Now });
 
                     // Add face to new list
-                    addResult = await FaceServiceHelper.AddFaceToFaceListAsync(newFaceListId, imageStreamCallback, face.FaceRectangle);
+                    if (imageUrl != null)
+                    {
+                        addResult = await FaceServiceHelper.AddFaceToFaceListFromUrlAsync(newFaceListId, imageUrl, face.FaceRectangle);
+                    }
+                    else
+                    {
+                        addResult = await FaceServiceHelper.AddFaceToFaceListFromStreamAsync(newFaceListId, imageStreamCallback, face.FaceRectangle);
+                    }
                 }
 
                 if (addResult != null)
                 {
-                    bestMatch = new Tuple<SimilarPersistedFace, string>(new SimilarPersistedFace { Confidence = 1, PersistedFaceId = addResult.PersistedFaceId }, null);
+                    bestMatch = new Tuple<SimilarFace, string>(new SimilarFace { Confidence = 1, PersistedFaceId = addResult.PersistedFaceId }, null);
                 }
             }
 

@@ -31,16 +31,14 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using Microsoft.ProjectOxford.Common;
-using Microsoft.ProjectOxford.Common.Contract;
-using Microsoft.ProjectOxford.Face.Contract;
+using Microsoft.Azure.CognitiveServices.Vision.ComputerVision.Models;
+using Face = Microsoft.Azure.CognitiveServices.Vision.Face.Models;
 using System;
-using System.Collections.Generic;
-using System.Linq;
+using Windows.Foundation;
 
 namespace ServiceHelpers
 {
-    public class CoreUtil
+    public static class CoreUtil
     {
         public static uint MinDetectableFaceCoveragePercentage = 0;
 
@@ -57,15 +55,10 @@ namespace ServiceHelpers
             return faceHeightPercentage >= MinDetectableFaceCoveragePercentage;
         }
 
-        public static Emotion FindFaceClosestToRegion(IEnumerable<Emotion> emotion, FaceRectangle region)
-        {
-            return emotion?.Where(e => CoreUtil.AreFacesPotentiallyTheSame(e.FaceRectangle, region))
-                                  .OrderBy(e => Math.Abs(region.Left - e.FaceRectangle.Left) + Math.Abs(region.Top - e.FaceRectangle.Top)).FirstOrDefault();
-        }
 
-        public static bool AreFacesPotentiallyTheSame(Rectangle face1, FaceRectangle face2)
+        public static bool AreFacesPotentiallyTheSame(Face.FaceRectangle face1, Face.FaceRectangle face2)
         {
-            return AreFacesPotentiallyTheSame((int)face1.Left, (int)face1.Top, (int)face1.Width, (int)face1.Height, face2.Left, face2.Top, face2.Width, face2.Height);
+            return AreFacesPotentiallyTheSame(face1.Left, face1.Top, face1.Width, face1.Height, face2.Left, face2.Top, face2.Width, face2.Height);
         }
 
         public static bool AreFacesPotentiallyTheSame(int face1X, int face1Y, int face1Width, int face1Height,
@@ -87,6 +80,28 @@ namespace ServiceHelpers
             }
 
             return false;
+        }
+
+        public static Rect ToRect(this Face.FaceRectangle rect)
+        {
+            return new Rect(rect.Left, rect.Top, rect.Width, rect.Height);
+        }
+
+        public static Rect ToRect(this BoundingRect rect)
+        {
+            return new Rect(rect.X, rect.Y, rect.W, rect.H);
+        }
+
+        public static Rect Inflate(this Rect rect, double inflatePercentage)
+        {
+            var width = rect.Width * inflatePercentage;
+            var height = rect.Height * inflatePercentage;
+            return new Rect(rect.X - ((width - rect.Width) / 2), rect.Y - ((height - rect.Height) / 2), width, height);
+        }
+
+        public static Rect Scale(this Rect rect, double scale)
+        {
+            return new Rect(rect.X * scale, rect.Y * scale, rect.Width * scale, rect.Height * scale);
         }
     }
 }

@@ -31,25 +31,48 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using Newtonsoft.Json;
+using Azure;
+using Azure.AI.TextAnalytics;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Net;
-using Newtonsoft.Json.Linq;
 
 namespace ServiceHelpers
 {
-    public class TextAnalyticsHelper
+    public static class TextAnalyticsHelper
     {
-        private static HttpClient httpClient { get; set; }
+        // NOTE 12/17/2020: Text Analytics API v3 language support
+        // See details: https://docs.microsoft.com/en-us/azure/cognitive-services/text-analytics/language-support
+        public static readonly string DefaultLanguageCode = "en";
+        public static readonly string[] SentimentAnalysisSupportedLanguages = { "zh", "zh-hans", "zh-hant", "en", "fr", "de", "hi", "it", "ja", "ko", "no", "pt", "pt-BR", "pt-PT", "es", "tr" };
+        public static readonly string[] OpinionMiningSupportedLanguages = { "en" };
+        public static readonly string[] KeyPhraseExtractionSupportedLanguages = { "da", "nl", "en", "fi", "fr", "de", "it", "ja", "ko", "no", "nb", "pl", "pt", "pt-BR", "pt-PT", "ru", "es", "sv" };
+        public static readonly string[] NamedEntitySupportedLanguages = { "ar", "zh", "zh-hans", "zh-hant", "cs", "da", "nl", "en", "fi", "fr", "de", "he", "hu", "it", "ja", "ko", "no", "nb", "pl", "pt", "pt-BR", "pt-PT", "ru", "es", "sv", "tr" };
+        public static readonly string[] EntityLinkingSupportedLanguages = { "en", "es" };
+        public static readonly Uri LanguageSupportUri = new Uri("https://docs.microsoft.com/en-us/azure/cognitive-services/text-analytics/language-support");
+        public static readonly Dictionary<string, string> LanguageCodeMap = new Dictionary<string, string>()
+        {
+            { "zh_chs", "zh-hans" },
+            { "zh_cht", "zh-hant" }
+        };
+
+        // Note: Data limits
+        // See details: https://docs.microsoft.com/en-us/azure/cognitive-services/text-analytics/concepts/data-limits?tabs=version-3#data-limits
+        public const int MaxRequestsPerSecond = 100; // for S0 / F0 tier
+        public const int MaximumLengthOfTextDocument = 5120; // 5,120 characters as measured by StringInfo.LengthInTextElements
+        public const int MaxDocumentsPerRequestForSentimentAnalysis = 10;   // Max Documents Per Request for Sentiment Analysis feature
+        public const int MaxDocumentsPerRequestForKeyPhraseExtraction = 10; // Max Documents Per Request for Key Phrase Extraction feature
+
+        private static TextAnalyticsClient client { get; set; }
+
+        static TextAnalyticsHelper()
+        {
+            InitializeTextAnalyticsService();
+        }
+
+        public static Action Throttled;
 
         private static string apiKey;
-
         public static string ApiKey
         {
             get { return apiKey; }
@@ -59,169 +82,78 @@ namespace ServiceHelpers
                 apiKey = value;
                 if (changed)
                 {
-                    InitializeTextAnalyticsClient();
+                    InitializeTextAnalyticsService();
                 }
             }
         }
 
-        private static string apiKeyRegion;
-        public static string ApiKeyRegion
+        private static string apiEndpoint;
+        public static string ApiEndpoint
         {
-            get { return apiKeyRegion; }
+            get { return apiEndpoint; }
             set
             {
-                var changed = apiKeyRegion != value;
-                apiKeyRegion = value;
+                var changed = apiEndpoint != value;
+                apiEndpoint = value;
                 if (changed)
                 {
-                    InitializeTextAnalyticsClient();
+                    InitializeTextAnalyticsService();
                 }
             }
         }
 
-        private static void InitializeTextAnalyticsClient()
+        private static void InitializeTextAnalyticsService()
         {
-            if (!string.IsNullOrEmpty(ApiKey) && !string.IsNullOrEmpty(ApiKeyRegion))
-            {
-                httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Add("Ocp-Apim-Subscription-Key", ApiKey);
-                httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                httpClient.BaseAddress = new Uri(string.Format("https://{0}.api.cognitive.microsoft.com/", ApiKeyRegion));
-            }
+            var credentials = !string.IsNullOrEmpty(ApiKey) ? new AzureKeyCredential(ApiKey) : null;
+            var endpoint = !string.IsNullOrEmpty(ApiEndpoint) && Uri.IsWellFormedUriString(ApiEndpoint, UriKind.Absolute) ? new Uri(ApiEndpoint) : null;
+            client = credentials != null && endpoint != null ? new TextAnalyticsClient(endpoint, credentials) : null;
         }
 
-        public static async Task<SentimentResult> GetTextSentimentAsync(string[] input, string language = "en")
+        public static async Task<DetectedLanguage> DetectLanguageAsync(string input)
         {
-            SentimentResult sentimentResult = new SentimentResult() { Scores = new double[] { 0.5 } };
-
-            if (input != null)
-            {
-                // Request body. 
-                string requestString = "{\"documents\":[";
-                for (int i = 0; i < input.Length; i++)
-                {
-                    requestString += string.Format("{{\"id\":\"{0}\",\"text\":\"{1}\", \"language\":\"{2}\"}}", i, input[i].Replace("\"", "'"), language);
-                    if (i != input.Length - 1)
-                    {
-                        requestString += ",";
-                    }
-                }
-
-                requestString += "]}";
-
-                byte[] byteData = Encoding.UTF8.GetBytes(requestString);
-
-                // get sentiment
-                string uri = "text/analytics/v2.0/sentiment";
-                var response = await CallEndpoint(httpClient, uri, byteData);
-                string content = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode)
-                {
-                    throw new Exception("Text Analytics failed. " + content);
-                }
-                dynamic data = JObject.Parse(content);
-                Dictionary<int, double> scores = new Dictionary<int, double>();
-                if (data.documents != null)
-                {
-                    for (int i = 0; i < data.documents.Count; i++)
-                    {
-                        scores[(int)data.documents[i].id] = data.documents[i].score;
-                    }
-                }
-
-                if (data.errors != null)
-                { 
-                    for (int i = 0; i < data.errors.Count; i++)
-                    {
-                        scores[(int)data.errors[i].id] = 0.5;
-                    }
-                }
-
-                sentimentResult = new SentimentResult { Scores = scores.OrderBy(s => s.Key).Select(s => s.Value) };
-            }
-
-            return sentimentResult;
+            return await client.DetectLanguageAsync(input);
         }
 
-        public static async Task<KeyPhrasesResult> GetKeyPhrasesAsync(string[] input, string language = "en")
+        public static async Task<DocumentSentiment> AnalyzeSentimentAsync(string input, string language = null, bool includeOpinionMining = false)
         {
-            KeyPhrasesResult result = new KeyPhrasesResult() { KeyPhrases = Enumerable.Empty<IEnumerable<string>>() };
-
-            if (input != null)
-            {
-                // Request body. 
-                string requestString = "{\"documents\":[";
-                for (int i = 0; i < input.Length; i++)
-                {
-                    requestString += string.Format("{{\"id\":\"{0}\",\"text\":\"{1}\", \"language\":\"{2}\"}}", i, input[i].Replace("\"", "'"), language);
-                    if (i != input.Length - 1)
-                    {
-                        requestString += ",";
-                    }
-                }
-
-                requestString += "]}";
-
-                byte[] byteData = Encoding.UTF8.GetBytes(requestString);
-
-                // get sentiment
-                string uri = "text/analytics/v2.0/keyPhrases";
-                var response = await CallEndpoint(httpClient, uri, byteData);
-                string content = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode)
-                {
-                    throw new Exception("Text Analytics failed. " + content);
-                }
-                dynamic data = JObject.Parse(content);
-                Dictionary<int, IEnumerable<string>> phrasesDictionary = new Dictionary<int, IEnumerable<string>>();
-                if (data.documents != null)
-                {
-                    for (int i = 0; i < data.documents.Count; i++)
-                    {
-                        List<string> phrases = new List<string>();
-
-                        for (int j = 0; j < data.documents[i].keyPhrases.Count; j++)
-                        {
-                            phrases.Add((string)data.documents[i].keyPhrases[j]);
-                        }
-                        phrasesDictionary[i] = phrases;
-                    }
-                }
-
-                if (data.errors != null)
-                {
-                    for (int i = 0; i < data.errors.Count; i++)
-                    {
-                        phrasesDictionary[i] = Enumerable.Empty<string>();
-                    }
-                }
-
-                result.KeyPhrases = phrasesDictionary.OrderBy(e => e.Key).Select(e => e.Value);
-            }
-
-            return result;
+            var options = new AnalyzeSentimentOptions() { IncludeOpinionMining = includeOpinionMining };
+            return await client.AnalyzeSentimentAsync(input, language, options);
         }
 
-        static async Task<HttpResponseMessage> CallEndpoint(HttpClient client, string uri, byte[] byteData)
+        public static async Task<AnalyzeSentimentResultCollection> AnalyzeSentimentAsync(string[] input, string language = null, bool includeOpinionMining = false)
         {
-            using (var content = new ByteArrayContent(byteData))
+            var options = new AnalyzeSentimentOptions() { IncludeOpinionMining = includeOpinionMining };
+            return await client.AnalyzeSentimentBatchAsync(input, language, options);
+        }
+
+        public static async Task<KeyPhraseCollection> ExtractKeyPhrasesAsync(string input, string language = null)
+        {
+            return await client.ExtractKeyPhrasesAsync(input, language);
+        }
+
+        public static async Task<ExtractKeyPhrasesResultCollection> ExtractKeyPhrasesAsync(string[] input, string language = null)
+        {
+            return await client.ExtractKeyPhrasesBatchAsync(input, language);
+        }
+
+        public static async Task<CategorizedEntityCollection> RecognizeEntitiesAsync(string input, string language = null)
+        {
+            return await client.RecognizeEntitiesAsync(input, language);
+        }
+
+        public static async Task<LinkedEntityCollection> RecognizeLinkedEntitiesAsync(string input, string language = null)
+        {
+            return await client.RecognizeLinkedEntitiesAsync(input, language);
+        }
+
+        public static string GetLanguageCode(DetectedLanguage detectedLanguage)
+        {
+            if (LanguageCodeMap.ContainsKey(detectedLanguage.Iso6391Name))
             {
-                content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-                return await client.PostAsync(uri, content);
+                return LanguageCodeMap[detectedLanguage.Iso6391Name];
             }
+
+            return !string.IsNullOrEmpty(detectedLanguage.Iso6391Name) ? detectedLanguage.Iso6391Name : DefaultLanguageCode;
         }
     }
-
-    /// Class to hold result of Sentiment call
-    /// </summary>
-    public class SentimentResult
-    {
-        public IEnumerable<double> Scores { get; set; }
-    }
-
-    public class KeyPhrasesResult
-    {
-        public IEnumerable<IEnumerable<string>> KeyPhrases { get; set; }
-    }
-
 }

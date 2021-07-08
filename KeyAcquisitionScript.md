@@ -3,7 +3,7 @@
 ## Create resource group
  ```sh
  # Create resource group, replace resouce group name and location of resource group as required
- az group create -n kiosk-cog-service-keys -l westus
+ az group create -n kiosk-cog-service-keys -l westus2
 
  ```
 
@@ -13,10 +13,10 @@ Please note! **[jq](https://stedolan.github.io/jq/)** needs to be installed to e
 ### To get the keys with the default parameters execute the following commands
   ```sh
   # The command below creates the cognitive service keys required by the KIOSK app, and then prints the keys
-  echo $(az group deployment create -n cog-keys-deploy -g kiosk-cog-service-keys --template-uri https://raw.githubusercontent.com/Microsoft/Cognitive-Samples-IntelligentKiosk/master/Kiosk/cognitive-keys-azure-deploy.json) | jq '.properties.outputs'
+  echo $(az deployment group create -n cog-keys-deploy -g kiosk-cog-service-keys --template-uri https://raw.githubusercontent.com/Microsoft/Cognitive-Samples-IntelligentKiosk/master/Kiosk/cognitive-keys-azure-deploy.json) | jq '.properties.outputs'
 
   # If you dont have jq installed you can execute the command, and manually search for the outputs section
-  # az group deployment create -n cog-keys-deploy -g kiosk-cog-service-keys --template-uri https://raw.githubusercontent.com/Microsoft/Cognitive-Samples-IntelligentKiosk/master/Kiosk/cognitive-keys-azure-deploy.json
+  # az deployment group create -n cog-keys-deploy -g kiosk-cog-service-keys --template-uri https://raw.githubusercontent.com/Microsoft/Cognitive-Samples-IntelligentKiosk/master/Kiosk/cognitive-keys-azure-deploy.json
 
   ```
 
@@ -26,10 +26,10 @@ Please note! **[jq](https://stedolan.github.io/jq/)** needs to be installed to e
  cd Kiosk
    
  # The command below creates the cognitive service keys required by the KIOSK app, and then prints the keys. You can modifiy the tiers associated with the generated keys by modifying the parameter values
- echo $(az group deployment create -n cog-keys-deploy -g kiosk-cog-service-keys --template-file cognitive-keys-azure-deploy.json --parameters @cognitive-keys-azure-deploy.parameters.json) | jq '.properties.outputs'
+ echo $(az deployment group create -n cog-keys-deploy -g kiosk-cog-service-keys --template-file cognitive-keys-azure-deploy.json --parameters @cognitive-keys-azure-deploy.parameters.json) | jq '.properties.outputs'
 
  # If you dont have jq installed you can execute the command, and manually search for the outputs section
- # az group deployment create -n cog-keys-deploy -g kiosk-cog-service-keys --template-file cognitive-keys-azure-deploy.json --parameters @cognitive-keys-azure-deploy.parameters.json
+ # az deployment group create -n cog-keys-deploy -g kiosk-cog-service-keys --template-file cognitive-keys-azure-deploy.json --parameters @cognitive-keys-azure-deploy.parameters.json
      
  ```
 
@@ -39,9 +39,13 @@ Please note! **[jq](https://stedolan.github.io/jq/)** needs to be installed to e
 
 # Sample output of above command
 {
-    "bingAugosuggestKey1": {
+    "anomalyDetectorEndpoint": {
         "type": "String",
-        "value": "cb4******************************"
+        "value": "https://westus2.api.cognitive.microsoft.com/"
+    },
+    "anomalyDetectorKey1": {
+        "type": "String",
+        "value": "5c9**************************************"
     },
     "bingSearchKey1": {
         "type": "String",
@@ -49,27 +53,71 @@ Please note! **[jq](https://stedolan.github.io/jq/)** needs to be installed to e
     },
     "compVisionEndpoint": {
         "type": "String",
-        "value": "https://westus.api.cognitive.microsoft.com/vision/v1.0"
+        "value": "https://westus2.api.cognitive.microsoft.com/"
     },
     "compVisionKey1": {
         "type": "String",
         "value": "fa5**************************************"
     },
+    "customVisionPredictionEndpoint": {
+        "type": "String",
+        "value": "https://westus2.api.cognitive.microsoft.com/"
+    },
+    "customVisionPredictionKey1": {
+        "type": "String",
+        "value": "fbd**************************************"
+    },
+    "customVisionTrainingEndpoint": {
+        "type": "String",
+        "value": "https://westus2.api.cognitive.microsoft.com/"
+    },
+    "customVisionTrainingKey1": {
+        "type": "String",
+        "value": "b36**************************************"
+    },
+    "customVisionTrainingResourceId": {
+        "type": "String",
+        "value": "/subscriptions/420**********/resourceGroups/ki********/providers/Microsoft.CognitiveServices/accounts/*******"
+    },
     "faceEndpoint": {
         "type": "String",
-        "value": "https://westus.api.cognitive.microsoft.com/face/v1.0"
+        "value": "https://westus2.api.cognitive.microsoft.com/"
     },
     "faceKey1": {
         "type": "String",
         "value": "87f7****************************************"
     },
+    "formRecognizerEndpoint": {
+        "type": "String",
+        "value": "https://westus2.api.cognitive.microsoft.com/"
+    },
+    "formRecognizerKey1": {
+        "type": "String",
+        "value": "2d3**************************************"
+    },
+    "speechEndpoint": {
+        "type": "String",
+        "value": "https://westus2.api.cognitive.microsoft.com/sts/v1.0/issuetoken"
+    },
+    "speechKey1": {
+        "type": "String",
+        "value": "e1c**************************************"
+    },
     "textAnalyticsEndpoint": {
         "type": "String",
-        "value": "https://westus.api.cognitive.microsoft.com/text/analytics/v2.0"
+        "value": "https://westus2.api.cognitive.microsoft.com/"
     },
     "textAnalyticsKey1": {
         "type": "String",
         "value": "ba3*************************************"
+    },
+    "textTranslatorEndpoint": {
+        "type": "String",
+        "value": "https://api.cognitive.microsofttranslator.com/"
+    },
+    "textTranslatorKey1": {
+        "type": "String",
+        "value": "551*************************************"
     }
 }
 

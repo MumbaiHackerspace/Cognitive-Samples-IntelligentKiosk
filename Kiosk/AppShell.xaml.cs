@@ -31,19 +31,17 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using IntelligentKioskSample.Controls;
 using IntelligentKioskSample.Views;
+using IntelligentKioskSample.Views.DemoLauncher;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Windows.Devices.Input;
-using Windows.Foundation;
-using Windows.Foundation.Metadata;
+using System.Reflection;
 using Windows.UI.Core;
+using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
-using Windows.UI.Xaml.Automation;
 using Windows.UI.Xaml.Controls;
-using Windows.UI.Xaml.Input;
+using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
 namespace IntelligentKioskSample
@@ -54,36 +52,44 @@ namespace IntelligentKioskSample
     /// </summary>
     public sealed partial class AppShell : Page
     {
+        bool prevFullScreen;
+
         // Declare the top level nav items
+        private NavMenuItem prevNavMenuItem;
         private List<NavMenuItem> navlist = new List<NavMenuItem>(
             new NavMenuItem[]
             {
                 new NavMenuItem()
                 {
-                    Symbol = Symbol.Home,
-                    Label = LandingPage.Title,
-                    DestPage = typeof(LandingPage)
-                },
-
-                new NavMenuItem()
-                {
-                    Symbol = Symbol.Favorite,
-                    Label = "Demos",
+                    Id = "DemoGallery",
+                    Glyph = "\uECA5",
+                    Label = "Demo Gallery",
                     DestPage = typeof(DemoLauncherPage)
                 },
 
                 new NavMenuItem()
                 {
-                    Symbol = Symbol.Contact2,
+                    Id = "Favorites",
+                    Glyph = "\uE735",
+                    Label = "Favorite demos",
+                    DestPage = typeof(DemoLauncherPage),
+                    Arguments = "Favorites"
+                },
+
+                new NavMenuItem()
+                {
+                    Id = "FaceIdentificationSetup",
+                    Glyph = "\uE8D4",
                     Label = "Face Identification Setup",
                     DestPage = typeof(FaceIdentificationSetup)
                 },
 
                 new NavMenuItem()
                 {
-                    Symbol = Symbol.Setting,
-                    Label = "Settings",
-                    DestPage = typeof(SettingsPage)
+                    Id = "CustomVisionSetup",
+                    Glyph = "\uE052",
+                    Label = "Custom Vision Setup",
+                    DestPage = typeof(CustomVisionSetup)
                 }
             });
 
@@ -102,105 +108,149 @@ namespace IntelligentKioskSample
             {
                 Current = this;
 
-                this.TogglePaneButton.Focus(FocusState.Programmatic);
-
                 this.NavigateToStartingPage();
             };
 
-            this.RootSplitView.RegisterPropertyChangedCallback(
-                SplitView.DisplayModeProperty,
-                (s, a) =>
-                {
-                    // Ensure that we update the reported size of the TogglePaneButton when the SplitView's
-                    // DisplayMode changes.
-                    this.CheckTogglePaneButtonSizeChanged();
-                });
-
             SystemNavigationManager.GetForCurrentView().BackRequested += SystemNavigationManager_BackRequested;
 
-            // If on a phone device that has hardware buttons then we hide the app's back button.
-            if (ApiInformation.IsTypePresent("Windows.Phone.UI.Input.HardwareButtons"))
+            navView.MenuItemsSource = navlist;
+
+            SetUpCustomTitleBar();
+        }
+
+        #region Custom Title Bar
+
+        void SetUpCustomTitleBar()
+        {
+            // Set the custom TitleBar colors
+            var appView = ApplicationView.GetForCurrentView();
+            var titleBar = appView.TitleBar;
+            titleBar.BackgroundColor =
+                titleBar.InactiveBackgroundColor =
+                titleBar.ButtonBackgroundColor =
+                titleBar.ButtonInactiveBackgroundColor =
+                ((SolidColorBrush)Application.Current.Resources["TitleBarButtonBackgroundBrush"]).Color;
+            titleBar.ForegroundColor =
+                titleBar.InactiveForegroundColor =
+                titleBar.ButtonForegroundColor =
+                titleBar.ButtonInactiveForegroundColor =
+                titleBar.ButtonHoverForegroundColor =
+                titleBar.ButtonPressedForegroundColor =
+                ((SolidColorBrush)Application.Current.Resources["TitleBarButtonForegroundBrush"]).Color;
+            titleBar.ButtonHoverBackgroundColor = ((SolidColorBrush)Application.Current.Resources["TitleBarButtonHoverBrush"]).Color;
+            titleBar.ButtonPressedBackgroundColor = ((SolidColorBrush)Application.Current.Resources["TitleBarButtonPressedBrush"]).Color;
+
+            //setup event handlers (see example: https://github.com/microsoft/Windows-universal-samples/tree/master/Samples/TitleBar)
+            var coreTitleBar = Windows.ApplicationModel.Core.CoreApplication.GetCurrentView().TitleBar;
+            coreTitleBar.IsVisibleChanged += UpdateTitleBar_Visibility;
+            coreTitleBar.LayoutMetricsChanged += UpdateTitleBar_Layout;
+            Window.Current.SizeChanged += Current_SizeChanged;
+            coreTitleBar.ExtendViewIntoTitleBar = true; //hides the built in title bar
+            Window.Current.SetTitleBar(TitleBarHandle); //allow moveing the window by this control
+
+            SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility = AppViewBackButtonVisibility.Visible;
+            SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility = AppViewBackButtonVisibility.Collapsed;
+
+            //connect to setting changes to update startup mode
+            SettingsHelper.Instance.PropertyChanged += Settings_PropertyChanged;
+
+            //setup the title bar correctly if already in started in full screen mode
+            if (ApplicationView.GetForCurrentView().IsFullScreenMode)
             {
-                this.BackButton.Visibility = Visibility.Collapsed;
+                UpdateTitleBar_Visibility(Windows.ApplicationModel.Core.CoreApplication.GetCurrentView().TitleBar);
+            }
+        }
+
+        private void Settings_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(SettingsHelper.StartupFullScreenMode))
+            {
+                //set the startup mode for next time when the app launches
+                ApplicationView.PreferredLaunchWindowingMode = SettingsHelper.Instance.StartupFullScreenMode ? ApplicationViewWindowingMode.FullScreen : ApplicationViewWindowingMode.Auto;
+            }
+        }
+
+        private void Current_SizeChanged(object sender, WindowSizeChangedEventArgs e)
+        {
+            var fullScreen = ApplicationView.GetForCurrentView().IsFullScreenMode;
+            if (prevFullScreen == true && fullScreen == false && TitleBar.Visibility == Visibility.Visible)
+            {
+                UpdateTitleBar_Visibility(Windows.ApplicationModel.Core.CoreApplication.GetCurrentView().TitleBar);
             }
 
-            NavMenuList.ItemsSource = navlist;
+            this.prevFullScreen = fullScreen;
         }
+
+        private void UpdateTitleBar_Layout(Windows.ApplicationModel.Core.CoreApplicationViewTitleBar sender, object args = null)
+        {
+            //set padding
+            TitleBar.Padding = new Thickness(sender.SystemOverlayLeftInset, 0, sender.SystemOverlayRightInset, 0);
+        }
+
+        private void UpdateTitleBar_Visibility(Windows.ApplicationModel.Core.CoreApplicationViewTitleBar sender, object args = null)
+        {
+            //set visibility
+            var visible = sender.IsVisible ? Visibility.Visible : Visibility.Collapsed;
+            if (TitleBar.Visibility != visible)
+            {
+                TitleBar.Visibility = visible;
+            }
+
+            //set rowspan if in fullscreen
+            var rowSpan = Grid.GetRowSpan(TitleBar);
+            var fullScreen = ApplicationView.GetForCurrentView().IsFullScreenMode;
+            var newRowSpan = fullScreen ? 2 : 1;
+            if (rowSpan != newRowSpan)
+            {
+                Grid.SetRowSpan(TitleBar, newRowSpan);
+            }
+
+            //toggle fullscreen button
+            var fullScreenButtonVisible = fullScreen ? Visibility.Collapsed : Visibility.Visible;
+            if (FullScreenButton.Visibility != fullScreenButtonVisible)
+            {
+                FullScreenButton.Visibility = fullScreenButtonVisible;
+            }
+        }
+
+        private void FullScreen_Click(object sender, RoutedEventArgs e)
+        {
+            //enter full screen mode
+            ApplicationView.GetForCurrentView().TryEnterFullScreenMode();
+        }
+
+        #endregion
 
         public void NavigateToStartingPage()
         {
-            NavMenuItem navMenuItem = null;
-            Type destPage = null;
-
-            navMenuItem = navlist.First();
-            destPage = navMenuItem.DestPage;
-
-            if (navMenuItem != null)
+            KioskExperience startingExp = KioskExperiences.Experiences.FirstOrDefault(item => item.Attributes.Id == SettingsHelper.Instance.StartingPage);
+            if (startingExp == null)
             {
-                NavMenuList.SelectedItem = navMenuItem;
+                NavigateToPage(typeof(DemoLauncherPage));
+                this.navView.SelectedItem = this.navlist.First();
             }
-
-            NavigateToPage(destPage);
+            else
+            {
+                NavigateToExperience(startingExp);
+            }
         }
 
-        public void NavigateToPage(Type destPage)
+        public void NavigateToPage(Type destPage, object parameter = null)
         {
-            if (this.AppFrame.CurrentSourcePageType != destPage)
+            AppFrame.Navigate(destPage, parameter, new Windows.UI.Xaml.Media.Animation.SuppressNavigationTransitionInfo());
+        }
+
+        public void NavigateToExperience(KioskExperience experience)
+        {
+            if (this.AppFrame.CurrentSourcePageType != experience.PageType)
             {
-                AppFrame.Navigate(destPage, string.Empty, new Windows.UI.Xaml.Media.Animation.SuppressNavigationTransitionInfo());
+                NavigateToPage(experience.PageType);
             }
         }
 
         public Frame AppFrame { get { return this.frame; } }
 
-        /// <summary>
-        /// Default keyboard focus movement for any unhandled keyboarding
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void AppShell_KeyDown(object sender, KeyRoutedEventArgs e)
-        {
-            FocusNavigationDirection direction = FocusNavigationDirection.None;
-            switch (e.Key)
-            {
-                case Windows.System.VirtualKey.Left:
-                case Windows.System.VirtualKey.GamepadDPadLeft:
-                case Windows.System.VirtualKey.GamepadLeftThumbstickLeft:
-                case Windows.System.VirtualKey.NavigationLeft:
-                    direction = FocusNavigationDirection.Left;
-                    break;
-                case Windows.System.VirtualKey.Right:
-                case Windows.System.VirtualKey.GamepadDPadRight:
-                case Windows.System.VirtualKey.GamepadLeftThumbstickRight:
-                case Windows.System.VirtualKey.NavigationRight:
-                    direction = FocusNavigationDirection.Right;
-                    break;
-
-                case Windows.System.VirtualKey.Up:
-                case Windows.System.VirtualKey.GamepadDPadUp:
-                case Windows.System.VirtualKey.GamepadLeftThumbstickUp:
-                case Windows.System.VirtualKey.NavigationUp:
-                    direction = FocusNavigationDirection.Up;
-                    break;
-
-                case Windows.System.VirtualKey.Down:
-                case Windows.System.VirtualKey.GamepadDPadDown:
-                case Windows.System.VirtualKey.GamepadLeftThumbstickDown:
-                case Windows.System.VirtualKey.NavigationDown:
-                    direction = FocusNavigationDirection.Down;
-                    break;
-            }
-
-            if (direction != FocusNavigationDirection.None)
-            {
-                var control = FocusManager.FindNextFocusableElement(direction) as Control;
-                if (control != null)
-                {
-                    control.Focus(FocusState.Programmatic);
-                    e.Handled = true;
-                }
-            }
-        }
+        public Grid AppOverlay { get { return this.appOverlay; } }
 
         #region BackRequested Handlers
 
@@ -209,12 +259,6 @@ namespace IntelligentKioskSample
             bool handled = e.Handled;
             this.BackRequested(ref handled);
             e.Handled = handled;
-        }
-
-        private void BackButton_Click(object sender, RoutedEventArgs e)
-        {
-            bool ignored = false;
-            this.BackRequested(ref ignored);
         }
 
         private void BackRequested(ref bool handled)
@@ -237,151 +281,87 @@ namespace IntelligentKioskSample
 
         #region Navigation
 
-        /// <summary>
-        /// Navigate to the Page for the selected <paramref name="listViewItem"/>.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="listViewItem"></param>
-        private void NavMenuList_ItemInvoked(object sender, ListViewItem listViewItem)
-        {
-            var item = (NavMenuItem)((NavMenuListView)sender).ItemFromContainer(listViewItem);
-
-            if (item != null)
-            {
-                if (item.DestPage != null &&
-                    item.DestPage != this.AppFrame.CurrentSourcePageType)
-                {
-                    this.AppFrame.Navigate(item.DestPage, item.Arguments);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Ensures the nav menu reflects reality when navigation is triggered outside of
-        /// the nav menu buttons.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void OnNavigatingToPage(object sender, NavigatingCancelEventArgs e)
-        {
-            if (e.NavigationMode == NavigationMode.Back)
-            {
-                var item = (from p in this.navlist where p.DestPage == e.SourcePageType select p).SingleOrDefault();
-                if (item == null && this.AppFrame.BackStackDepth > 0)
-                {
-                    // In cases where a page drills into sub-pages then we'll highlight the most recent
-                    // navigation menu item that appears in the BackStack
-                    foreach (var entry in this.AppFrame.BackStack.Reverse())
-                    {
-                        item = (from p in this.navlist where p.DestPage == entry.SourcePageType select p).SingleOrDefault();
-                        if (item != null)
-                            break;
-                    }
-                }
-
-                var container = (ListViewItem)NavMenuList.ContainerFromItem(item);
-
-                // While updating the selection state of the item prevent it from taking keyboard focus.  If a
-                // user is invoking the back button via the keyboard causing the selected nav menu item to change
-                // then focus will remain on the back button.
-                if (container != null) container.IsTabStop = false;
-                NavMenuList.SetSelectedItem(container);
-                if (container != null) container.IsTabStop = true;
-            }
-        }
-
         private void OnNavigatedToPage(object sender, NavigationEventArgs e)
         {
-            // After a successful navigation set keyboard focus to the loaded page
+            // Each time a navigation event occurs, update the Back button's visibility
+            SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility =
+                ((Frame)sender).CanGoBack && !(e.Content is DemoLauncherPage) ?
+                AppViewBackButtonVisibility.Visible :
+                AppViewBackButtonVisibility.Collapsed;
+
+            // After a successful navigation, update the state of the pane
             if (e.Content is Page && e.Content != null)
             {
                 var control = (Page)e.Content;
+
+                var kioskDemoAtribute = control.GetType().GetTypeInfo().GetCustomAttribute<KioskExperienceAttribute>();
+                if (kioskDemoAtribute != null)
+                {
+                    navView.PaneDisplayMode = NavigationViewPaneDisplayMode.LeftMinimal;
+                    navView.SelectedItem = null;
+                }
+                else
+                {
+                    navView.PaneDisplayMode = NavigationViewPaneDisplayMode.LeftCompact;
+
+                    var menuItem = navlist.FirstOrDefault(item => item.DestPage == control.GetType());
+                    if (control is DemoLauncherPage && (string)e.Parameter == "Favorites")
+                    {
+                        menuItem = navlist.FirstOrDefault(item => item.Id == "Favorites");
+                    }
+
+                    if (menuItem != null && menuItem != navView.SelectedItem)
+                    {
+                        navView.SelectedItem = menuItem;
+                    }
+                }
+
+                navView.IsPaneOpen = false;
+
+                // wait for load event to inject the help element into the UI
                 control.Loaded += Page_Loaded;
             }
         }
 
         private void Page_Loaded(object sender, RoutedEventArgs e)
         {
-            ((Page)sender).Focus(FocusState.Programmatic);
-            ((Page)sender).Loaded -= Page_Loaded;
-            this.CheckTogglePaneButtonSizeChanged();
+            Page page = ((Page)sender);
+            page.Loaded -= Page_Loaded;
+        }
+
+        private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+        {
+            if (args.IsSettingsSelected)
+            {
+                NavigateToPage(typeof(SettingsPage));
+                this.prevNavMenuItem = null;
+            }
+            else
+            {
+                var item = (NavMenuItem)args.SelectedItemContainer?.DataContext;
+                if (item?.DestPage != null && item.Id != this.prevNavMenuItem?.Id)
+                {
+                    NavigateToPage(item.DestPage, item.Arguments);
+                }
+                this.prevNavMenuItem = item;
+            }
+        }
+
+        private void OnNavViewItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
+        {
+            // See if the user is clicking on the Demo Gallery button when the current view is already the Demo Gallery. In that case,
+            // we will use this as an opportunity to force the gallery to switch back to the main gallery content (if needed)
+            NavMenuItem item = sender.SelectedItem as NavMenuItem;
+            if (item?.Id == "DemoGallery" && this.prevNavMenuItem?.Id == item.Id)
+            {
+                DemoLauncherPage launcher = AppFrame.Content as DemoLauncherPage;
+                if (launcher != null && !launcher.IsMainPage)
+                {
+                    launcher.SwitchToMainGalleryView();
+                }
+            }
         }
 
         #endregion
-
-        public Rect TogglePaneButtonRect
-        {
-            get;
-            private set;
-        }
-
-        /// <summary>
-        /// An event to notify listeners when the hamburger button may occlude other content in the app.
-        /// The custom "PageHeader" user control is using this.
-        /// </summary>
-        public event TypedEventHandler<AppShell, Rect> TogglePaneButtonRectChanged;
-
-        /// <summary>
-        /// Callback when the SplitView's Pane is toggled open or close.  When the Pane is not visible
-        /// then the floating hamburger may be occluding other content in the app unless it is aware.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void TogglePaneButton_Checked(object sender, RoutedEventArgs e)
-        {
-            this.CheckTogglePaneButtonSizeChanged();
-        }
-
-
-
-        /// <summary>
-        /// Check for the conditions where the navigation pane does not occupy the space under the floating
-        /// hamburger button and trigger the event.
-        /// </summary>
-        private void CheckTogglePaneButtonSizeChanged()
-        {
-            if (this.RootSplitView.DisplayMode == SplitViewDisplayMode.Inline ||
-                this.RootSplitView.DisplayMode == SplitViewDisplayMode.Overlay)
-            {
-                var transform = this.TogglePaneButton.TransformToVisual(this);
-                var rect = transform.TransformBounds(new Rect(0, 0, this.TogglePaneButton.ActualWidth, this.TogglePaneButton.ActualHeight));
-                this.TogglePaneButtonRect = rect;
-            }
-            else
-            {
-                this.TogglePaneButtonRect = new Rect();
-            }
-
-            var handler = this.TogglePaneButtonRectChanged;
-            if (handler != null)
-            {
-                // handler(this, this.TogglePaneButtonRect);
-                handler.DynamicInvoke(this, this.TogglePaneButtonRect);
-            }
-        }
-
-        /// <summary>
-        /// Enable accessibility on each nav menu item by setting the AutomationProperties.Name on each container
-        /// using the associated Label of each item.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="args"></param>
-        private void NavMenuItemContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
-        {
-            if (!args.InRecycleQueue && args.Item != null && args.Item is NavMenuItem)
-            {
-                args.ItemContainer.SetValue(AutomationProperties.NameProperty, ((NavMenuItem)args.Item).Label);
-            }
-            else
-            {
-                args.ItemContainer.ClearValue(AutomationProperties.NameProperty);
-            }
-        }
-
-        private void TogglePaneButton_Tapped(object sender, TappedRoutedEventArgs e)
-        {
-            RootSplitView.IsPaneOpen = !RootSplitView.IsPaneOpen;
-            TogglePaneButton.IsChecked = !TogglePaneButton.IsChecked;
-        }
     }
 }

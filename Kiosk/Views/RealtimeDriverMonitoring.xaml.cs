@@ -31,8 +31,8 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using KioskRuntimeComponent;
-using Microsoft.ProjectOxford.Face.Contract;
+using IntelligentKioskSample.Controls.Animation;
+using Microsoft.Azure.CognitiveServices.Vision.Face.Models;
 using ServiceHelpers;
 using System;
 using System.Collections.Generic;
@@ -52,15 +52,17 @@ using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Navigation;
 
-// The Blank Page item template is documented at http://go.microsoft.com/fwlink/?LinkId=234238
-
 namespace IntelligentKioskSample.Views
 {
 
-    /// <summary>
-    /// An empty page that can be used on its own or navigated to within a Frame.
-    /// </summary>
-    [KioskExperience(Title = "Realtime Driver Monitoring", ImagePath = "ms-appx:/Assets/RealtimeDriverMonitoring.jpg", ExperienceType = ExperienceType.Other)]
+    [KioskExperience(Id = "RealtimeDriverMonitoring",
+        DisplayName = "Realtime Driver Monitoring",
+        Description = "See how AI can identify a distracted driver",
+        ImagePath = "ms-appx:/Assets/DemoGallery/Realtime Driver Monitoring.jpg",
+        ExperienceType = ExperienceType.Guided | ExperienceType.Business,
+        TechnologiesUsed = TechnologyType.Face | TechnologyType.Vision,
+        TechnologyArea = TechnologyAreaType.Vision,
+        DateAdded = "2016/11/09")]
     public sealed partial class RealtimeDriverMonitoring : Page
     {
         private Task processingLoopTask;
@@ -87,7 +89,7 @@ namespace IntelligentKioskSample.Views
             Window.Current.Activated += CurrentWindowActivationStateChanged;
             this.cameraControl.FilterOutSmallFaces = true;
             this.cameraControl.HideCameraControls();
-            this.cameraControl.ShowDialogOnApiErrors = false;
+            this.cameraControl.ShowDialogOnApiErrors = SettingsHelper.Instance.ShowDialogOnApiErrors;
             this.cameraControl.CameraAspectRatioChanged += CameraControl_CameraAspectRatioChanged;
 
             this.inputSourceComboBox.SelectionChanged += this.InputSourceChanged;
@@ -279,19 +281,20 @@ namespace IntelligentKioskSample.Views
                 {
                     name = p.Person.Name;
                 }
-                else
+                else if (SettingsHelper.Instance.ShowAgeAndGender)
                 {
-                    if (faceMatch.Face.FaceAttributes.Gender == "male")
+                    switch (faceMatch.Face.FaceAttributes.Gender)
                     {
-                        name = "Unknown male";
-                    }
-                    else if (faceMatch.Face.FaceAttributes.Gender == "female")
-                    {
-                        name = "Unknown female";
+                        case Gender.Male:
+                            name = "Unknown male";
+                            break;
+                        case Gender.Female:
+                            name = "Unknown female";
+                            break;
                     }
                 }
 
-                this.driverId.Text = string.Format("{0}", name, faceMatch.SimilarPersistedFace.PersistedFaceId.ToString("N").Substring(0, 4));
+                this.driverId.Text = string.Format("{0}", name, faceMatch.SimilarPersistedFace.PersistedFaceId.GetValueOrDefault().ToString("N").Substring(0, 4));
             }
 
             this.isProcessingDriverId = false;
@@ -311,7 +314,7 @@ namespace IntelligentKioskSample.Views
             this.ProcessEyes(f, await GetFaceCropAsync(e));
         }
 
-        private void ProcessHeadPose(Face f, Image img)
+        private void ProcessHeadPose(DetectedFace f, Image img)
         {
             double headPoseDeviation = Math.Abs(f.FaceAttributes.HeadPose.Yaw);
 
@@ -323,7 +326,7 @@ namespace IntelligentKioskSample.Views
                                              this.isInputSourceFromVideo ? Controls.WrapBehavior.Slide : Controls.WrapBehavior.Clear);
         }
 
-        private void ProcessMouth(Face f, Image img)
+        private void ProcessMouth(DetectedFace f, Image img)
         {
             double mouthWidth = Math.Abs(f.FaceLandmarks.MouthRight.X - f.FaceLandmarks.MouthLeft.X);
             double mouthHeight = Math.Abs(f.FaceLandmarks.UpperLipBottom.Y - f.FaceLandmarks.UnderLipTop.Y);
@@ -337,7 +340,7 @@ namespace IntelligentKioskSample.Views
                                                   this.isInputSourceFromVideo ? Controls.WrapBehavior.Slide : Controls.WrapBehavior.Clear);
         }
 
-        private void ProcessEyes(Face f, Image img)
+        private void ProcessEyes(DetectedFace f, Image img)
         {
             double leftEyeWidth = Math.Abs(f.FaceLandmarks.EyeLeftInner.X - f.FaceLandmarks.EyeLeftOuter.X);
             double leftEyeHeight = Math.Abs(f.FaceLandmarks.EyeLeftBottom.Y - f.FaceLandmarks.EyeLeftTop.Y);
@@ -498,7 +501,7 @@ namespace IntelligentKioskSample.Views
                 biggerRectangle.Left = Math.Max(0, rect.Left - (int)(rect.Width * ((widthScaleFactor - 1) / 2)));
                 biggerRectangle.Top = Math.Max(0, rect.Top - (int)(rect.Height * ((heightScaleFactor - 1) / 1.4)));
 
-                croppedImage = await Util.GetCroppedBitmapAsync(img.GetImageStreamCallback, biggerRectangle);
+                croppedImage = await Util.GetCroppedBitmapAsync(img.GetImageStreamCallback, biggerRectangle.ToRect());
             }
 
             return new Image { Source = croppedImage, Height = 200 };

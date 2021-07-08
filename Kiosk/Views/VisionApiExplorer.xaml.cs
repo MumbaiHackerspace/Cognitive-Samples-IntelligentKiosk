@@ -31,68 +31,157 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // 
 
-using Newtonsoft.Json.Linq;
+using IntelligentKioskSample.Controls.Overlays;
+using IntelligentKioskSample.Controls.Overlays.Primitives;
+using IntelligentKioskSample.Models;
+using Microsoft.Azure.CognitiveServices.Vision.ComputerVision.Models;
 using ServiceHelpers;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading.Tasks;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.UI;
 using Windows.UI.Popups;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Media;
+using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Navigation;
 
 namespace IntelligentKioskSample.Views
 {
-    [KioskExperience(Title = "Vision API Explorer", ImagePath = "ms-appx:/Assets/VisionAPI.jpg")]
-    public sealed partial class VisionApiExplorer : Page
+    [KioskExperience(Id = "VisionAPIExplorer",
+        DisplayName = "Vision API Explorer",
+        Description = "Extract insights from images, including tags, text, and objects",
+        ImagePath = "ms-appx:/Assets/DemoGallery/Vision API Explorer.jpg",
+        ExperienceType = ExperienceType.Guided | ExperienceType.Business,
+        TechnologyArea = TechnologyAreaType.Vision,
+        TechnologiesUsed = TechnologyType.BingAutoSuggest | TechnologyType.BingImages | TechnologyType.Vision,
+        DateUpdated = "2019/10/02",
+        UpdatedDescription = "Now uses Read API for text recognition",
+        DateAdded = "2017/02/08")]
+    public sealed partial class VisionApiExplorer : Page, INotifyPropertyChanged
     {
+        IList<IList<TextOverlayInfo>> _ocrLines;
+        IList<FaceOverlayInfo> _celebrities;
+        IList<FaceOverlayInfo> _faces;
+        IList<ObjectOverlayInfo> _objects;
+        IList<ObjectOverlayInfo> _brands;
+        string _noItemsDescription;
+        PivotItem _selectedTab;
+        const string NoneDesc = "None";
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        public IList<IList<TextOverlayInfo>> OcrLines { get => _ocrLines; set { _ocrLines = value; OnPropertyChanged(); } }
+        public IList<FaceOverlayInfo> Celebrities { get => _celebrities; set => SetProperty(ref _celebrities, value); }
+        public IList<FaceOverlayInfo> Faces { get => _faces; set => SetProperty(ref _faces, value); }
+        public IList<ObjectOverlayInfo> Objects { get => _objects; set => SetProperty(ref _objects, value); }
+        public IList<ObjectOverlayInfo> Brands { get => _brands; set => SetProperty(ref _brands, value); }
+        public string NoItemsDescription { get => _noItemsDescription; set => SetProperty(ref _noItemsDescription, value); }
+
+        public TabHeader SummaryTab = new TabHeader() { Name = "Summary" };
+        public TabHeader FacesTab = new TabHeader() { Name = "Faces" };
+        public TabHeader ObjectsTab = new TabHeader() { Name = "Objects" };
+        public TabHeader TextTab = new TabHeader() { Name = "Text" };
+        public PivotItem SelectedTab
+        {
+            get => _selectedTab;
+            set
+            {
+                if (SetProperty(ref _selectedTab, value))
+                {
+                    SetMute(SelectedTab);
+                }
+            }
+        }
+
+        public static bool ShowAgeAndGender { get { return SettingsHelper.Instance.ShowAgeAndGender; } }
+
         public VisionApiExplorer()
         {
             this.InitializeComponent();
+        }
 
-            this.cameraControl.ImageCaptured += CameraControl_ImageCaptured;
-            this.cameraControl.CameraRestarted += CameraControl_CameraRestarted;
+        private void DisplayProcessingUI(bool reanalyze = true)
+        {
+            if (reanalyze)
+            {
+                this.tagsGridView.ItemsSource = new[] { new { Name = "Analyzing..." } };
+                this.descriptionGridView.ItemsSource = new[] { new { Description = "Analyzing..." } };
+                this.landmarksTextBlock.Text = "Analyzing...";
+                this.colorInfoListView.ItemsSource = new[] { new { Description = "Analyzing..." } };
+                NoItemsDescription = "Analyzing...";
+                OcrLines = null;
+                Celebrities = null;
+                Faces = null;
+                Objects = null;
+                Brands = null;
+                FacesTab.Summary = "Analyzing...";
+                ObjectsTab.Summary = "Analyzing...";
+                TextTab.Summary = "Analyzing...";
+                Processing.IsActive = true;
+            }
 
-            this.favoritePhotosGridView.ItemsSource = new string[] 
+            OverlayPresenter.FaceInfo = null;
+            OverlayPresenter.ObjectInfo = null;
+            OverlayPresenter.TextInfo = null;
+        }
+
+        private async Task UpdateResultsAsync(ImageAnalyzer img)
+        {
+            //convert results to OverlayInfo
+            var faces = img.AnalysisResult.Faces.Select(i => new FaceOverlayInfo(i, GetCelebrity(i, img.AnalysisResult)) { IsMuted = true }).ToArray();
+            var objects = img.AnalysisResult.Objects.Select(i => new ObjectOverlayInfo(i) { IsMuted = true }).ToArray();
+            var brands = img.AnalysisResult.Brands.Select(i => new ObjectOverlayInfo(i) { IsMuted = true }).ToArray();
+
+            //extract crops from the image
+            var stream = img.ImageUrl == null ? await img.GetImageStreamCallback() : new MemoryStream(await new HttpClient().GetByteArrayAsync(img.ImageUrl));
+
+            using (stream)
+            {
+                foreach (var face in faces)
                 {
-                    "https://howoldkiosk.blob.core.windows.net/kiosksuggestedphotos/1.jpg",
-                    "https://howoldkiosk.blob.core.windows.net/kiosksuggestedphotos/2.jpg",
-                    "https://howoldkiosk.blob.core.windows.net/kiosksuggestedphotos/3.jpg",
-                    "https://howoldkiosk.blob.core.windows.net/kiosksuggestedphotos/4.jpg",
-                    "https://howoldkiosk.blob.core.windows.net/kiosksuggestedphotos/5.jpg"
-                };
-        }
+                    face.EntityExt.Image = await Util.GetCroppedBitmapAsync(stream.AsRandomAccessStream(), face.Rect);
+                }
+                foreach (var obj in objects)
+                {
+                    obj.EntityExt.Image = await Util.GetCroppedBitmapAsync(stream.AsRandomAccessStream(), obj.Rect);
+                }
+                foreach (var brand in brands)
+                {
+                    brand.EntityExt.Image = await Util.GetCroppedBitmapAsync(stream.AsRandomAccessStream(), brand.Rect);
+                }
+            }
 
-        private async void CameraControl_CameraRestarted(object sender, EventArgs e)
-        {
-            // We induce a delay here to give the camera some time to start rendering before we hide the last captured photo.
-            // This avoids a black flash.
-            await Task.Delay(500);
+            //apply results
+            Celebrities = faces.Where(i => i.IsCelebrity).ToArray();
+            Faces = faces.Where(i => !i.IsCelebrity).ToArray();
+            Objects = objects;
+            Brands = brands;
+            OverlayPresenter.FaceInfo = Faces;
+            OverlayPresenter.ObjectInfo = objects.Concat(brands).ToArray();
 
-            this.imageFromCameraWithFaces.Visibility = Visibility.Collapsed;
-            this.resultsDetails.Visibility = Visibility.Collapsed;
-        }
 
-        private void DisplayProcessingUI()
-        {
-            this.tagsGridView.ItemsSource = new[] { new { Name = "Analyzing..." } };
-            this.descriptionGridView.ItemsSource = new[] { new { Description = "Analyzing..." } };
-            this.celebritiesTextBlock.Text = "Analyzing...";
-            this.colorInfoListView.ItemsSource = new[] { new { Description = "Analyzing..." } };
-
-            this.ocrToggle.IsEnabled = false;
-        }
-
-        private void UpdateResults(ImageAnalyzer img)
-        {
             if (img.AnalysisResult.Tags == null || !img.AnalysisResult.Tags.Any())
             {
                 this.tagsGridView.ItemsSource = new[] { new { Name = "No tags" } };
             }
             else
             {
-                this.tagsGridView.ItemsSource = img.AnalysisResult.Tags.Select(t => new { Confidence = string.Format("({0}%)", Math.Round(t.Confidence * 100)), Name = t.Name });
+                var tags = img.AnalysisResult.Tags.Select(t => new { Confidence = string.Format("({0}%)", Math.Round(t.Confidence * 100)), Name = t.Name });
+                if (!ShowAgeAndGender)
+                {
+                    tags = tags.Where(t => !Util.ContainsGenderRelatedKeyword(t.Name));
+                }
+
+                this.tagsGridView.ItemsSource = tags;
             }
 
             if (img.AnalysisResult.Description == null || !img.AnalysisResult.Description.Captions.Any(d => d.Confidence >= 0.2))
@@ -101,17 +190,30 @@ namespace IntelligentKioskSample.Views
             }
             else
             {
-                this.descriptionGridView.ItemsSource = img.AnalysisResult.Description.Captions.Select(d => new { Confidence = string.Format("({0}%)", Math.Round(d.Confidence * 100)), Description = d.Text });
+                var descriptions = img.AnalysisResult.Description.Captions.Select(d => new { Confidence = string.Format("({0}%)", Math.Round(d.Confidence * 100)), Description = d.Text });
+                if (!ShowAgeAndGender)
+                {
+                    descriptions = descriptions.Where(t => !Util.ContainsGenderRelatedKeyword(t.Description));
+                }
+
+                if (descriptions.Any())
+                {
+                    this.descriptionGridView.ItemsSource = descriptions;
+                }
+                else
+                {
+                    this.descriptionGridView.ItemsSource = new[] { new { Description = "Please enable Age/Gender prediction in the Settings Page to see the results" } };
+                }
             }
 
-            var celebNames = this.GetCelebrityNames(img);
-            if (celebNames == null || !celebNames.Any())
+            var landmarkNames = this.GetLandmarkNames(img);
+            if (landmarkNames == null || !landmarkNames.Any())
             {
-                this.celebritiesTextBlock.Text = "None";
+                this.landmarksTextBlock.Text = NoneDesc;
             }
             else
             {
-                this.celebritiesTextBlock.Text = string.Join(", ", celebNames.OrderBy(name => name));
+                this.landmarksTextBlock.Text = string.Join(", ", landmarkNames.OrderBy(name => name).Distinct());
             }
 
             if (img.AnalysisResult.Color == null)
@@ -119,75 +221,132 @@ namespace IntelligentKioskSample.Views
                 this.colorInfoListView.ItemsSource = new[] { new { Description = "Not available" } };
             }
             else
-            { 
+            {
                 this.colorInfoListView.ItemsSource = new[]
                 {
-                    new { Description = "Dominant background color:", Colors = new string[] { img.AnalysisResult.Color.DominantColorBackground } },
-                    new { Description = "Dominant foreground color:", Colors = new string[] { img.AnalysisResult.Color.DominantColorForeground } },
-                    new { Description = "Dominant colors:", Colors = img.AnalysisResult.Color.DominantColors },
-                    new { Description = "Accent color:", Colors = new string[] { "#" + img.AnalysisResult.Color.AccentColor } }
+                    new { Description = "Background", Colors = new string[] { img.AnalysisResult.Color.DominantColorBackground } },
+                    new { Description = "Foreground", Colors = new string[] { img.AnalysisResult.Color.DominantColorForeground } },
+                    new { Description = "Dominant", Colors = img.AnalysisResult.Color.DominantColors?.ToArray() },
+                    new { Description = "Accent", Colors = new string[] { "#" + img.AnalysisResult.Color.AccentColor } }
                 };
             }
 
-            this.ocrToggle.IsEnabled = true;
+            NoItemsDescription = NoneDesc;
+
+            //update summaries
+            FacesTab.Summary = SummaryBuilder((Faces?.Count(), "face", "faces"), (Celebrities?.Count(), "celebrity", "celebrities"));
+            ObjectsTab.Summary = SummaryBuilder((Objects?.Count(), "object", "objects"), (Brands?.Count(), "brand", "brands"));
+
+            //update muted items
+            SetMute(SelectedTab);
+
+            Processing.IsActive = false;
         }
 
-        private IEnumerable<String> GetCelebrityNames(ImageAnalyzer analyzer)
+        private CelebritiesModel GetCelebrity(FaceDescription face, ImageAnalysis result)
+        {
+            if (result.Categories != null)
+            {
+                foreach (var category in result.Categories.Where(c => c.Detail != null))
+                {
+                    if (category.Detail.Celebrities != null)
+                    {
+                        foreach (var celebrity in category.Detail.Celebrities)
+                        {
+                            int left = celebrity.FaceRectangle.Left;
+                            int top = celebrity.FaceRectangle.Top;
+
+                            if (Math.Abs(left - face.FaceRectangle.Left) <= 3 && Math.Abs(top - face.FaceRectangle.Top) <= 3)
+                            {
+                                return celebrity;
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        string GetPlural((int? Count, string Desc, string PluralDesc) summary)
+        {
+            //plural form
+            if (summary.Count != null && summary.Count.Value > 1)
+            {
+                return summary.PluralDesc;
+            }
+
+            //singular form
+            return summary.Desc;
+        }
+
+        string SummaryBuilder(params (int? Count, string Desc, string PluralDesc)[] summary)
+        {
+            var strings = summary.Where(i => i.Count != null && i.Count != 0).Select(i => $"{i.Count} {GetPlural(i)}").ToArray();
+            return strings.Length == 0 ? NoneDesc : string.Join(", ", strings);
+        }
+
+        private IEnumerable<string> GetLandmarkNames(ImageAnalyzer analyzer)
         {
             if (analyzer.AnalysisResult?.Categories != null)
             {
-                foreach (var category in analyzer.AnalysisResult.Categories.Where(c => c.Detail != null))
+                foreach (var category in analyzer.AnalysisResult.Categories?.Where(c => c.Detail != null))
                 {
-                    dynamic detail = JObject.Parse(category.Detail.ToString());
-                    if (detail.celebrities != null)
+                    if (category.Detail.Landmarks != null)
                     {
-                        foreach (var celebrity in detail.celebrities)
+                        foreach (var landmark in category.Detail.Landmarks)
                         {
-
-                            yield return celebrity.name.ToString();
+                            yield return landmark.Name;
                         }
                     }
                 }
             }
         }
 
-        private async void CameraControl_ImageCaptured(object sender, ImageAnalyzer e)
+        private async Task UpdateActivePhoto(ImageAnalyzer img)
         {
-            this.UpdateActivePhoto(e);
-
-            this.imageFromCameraWithFaces.DataContext = e;
-            this.imageFromCameraWithFaces.Visibility = Visibility.Visible;
-
-            await this.cameraControl.StopStreamAsync();
-        }
-
-        private void UpdateActivePhoto(ImageAnalyzer img)
-        {
-            this.landingMessage.Visibility = Visibility.Collapsed;
             this.resultsDetails.Visibility = Visibility.Visible;
+            var tasks = new List<Task>();
 
             if (img.AnalysisResult != null)
             {
-                this.UpdateResults(img);
+                this.DisplayProcessingUI(reanalyze: false);
             }
             else
             {
                 this.DisplayProcessingUI();
-                img.ComputerVisionAnalysisCompleted += (s, args) =>
-                {
-                    this.UpdateResults(img);
-                };
+                tasks.Add(img.AnalyzeImageAsync());
             }
-        }
 
-        protected override async void OnNavigatingFrom(NavigatingCancelEventArgs e)
-        {
-            await this.cameraControl.StopStreamAsync();
-            base.OnNavigatingFrom(e);
+            if (img.TextOperationResult == null)
+            {
+                tasks.Add(img.RecognizeTextAsync());
+            }
+
+            await Task.WhenAll(tasks);
+
+            if (img.AnalysisResult != null)
+            {
+                await this.UpdateResultsAsync(img);
+            }
+            if (img.TextOperationResult != null)
+            {
+                this.UpdateOcrTextBoxContent(img);
+            }
         }
 
         protected override async void OnNavigatedTo(NavigationEventArgs e)
         {
+            await this.imagePicker.SetSuggestedImageList(
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/1.jpg"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/2.jpg"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/3.jpg"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/4.jpg"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/5.jpg"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/8.png"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/6.png"),
+                new Uri("ms-appx:///Assets/DemoSamples/VisionApiExplorer/7.png")
+            );
+
             if (string.IsNullOrEmpty(SettingsHelper.Instance.VisionApiKey))
             {
                 await new MessageDialog("Missing Computer Vision API Key. Please enter a key in the Settings page.", "Missing API Key").ShowAsync();
@@ -198,85 +357,166 @@ namespace IntelligentKioskSample.Views
 
         private async void OnImageSearchCompleted(object sender, IEnumerable<ImageAnalyzer> args)
         {
-            this.favoritePhotosGridView.SelectedItem = null;
-
-            this.imageSearchFlyout.Hide();
             ImageAnalyzer image = args.First();
             image.ShowDialogOnFaceApiErrors = true;
 
-            this.imageWithFacesControl.Visibility = Visibility.Visible;
-            this.webCamHostGrid.Visibility = Visibility.Collapsed;
-            await this.cameraControl.StopStreamAsync();
-
-            this.UpdateActivePhoto(image);
-
-            this.imageWithFacesControl.DataContext = image;
-        }
-
-        private void OnImageSearchCanceled(object sender, EventArgs e)
-        {
-            this.imageSearchFlyout.Hide();
-        }
-
-        private async void OnWebCamButtonClicked(object sender, RoutedEventArgs e)
-        {
-            await StartWebCameraAsync();
-        }
-
-        private async Task StartWebCameraAsync()
-        {
-            this.favoritePhotosGridView.SelectedItem = null;
-            this.landingMessage.Visibility = Visibility.Collapsed;
-            this.webCamHostGrid.Visibility = Visibility.Visible;
-            this.imageWithFacesControl.Visibility = Visibility.Collapsed;
-            this.resultsDetails.Visibility = Visibility.Collapsed;
-
-            await this.cameraControl.StartStreamAsync();
-            await Task.Delay(250);
-            this.imageFromCameraWithFaces.Visibility = Visibility.Collapsed;
-
-            UpdateWebCamHostGridSize();
-        }
-
-        private void OnPageSizeChanged(object sender, SizeChangedEventArgs e)
-        {
-            UpdateWebCamHostGridSize();
-        }
-
-        private void UpdateWebCamHostGridSize()
-        {
-            this.webCamHostGrid.Height = this.webCamHostGrid.ActualWidth / (this.cameraControl.CameraAspectRatio != 0 ? this.cameraControl.CameraAspectRatio : 1.777777777777);
-        }
-
-        private async void OnFavoriteSelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            this.favoriteImagePickerFlyout.Hide();
-
-            if (!string.IsNullOrEmpty((string)this.favoritePhotosGridView.SelectedValue))
+            //set image source
+            if (image.ImageUrl != null)
             {
-                this.landingMessage.Visibility = Visibility.Collapsed;
+                OverlayPresenter.Source = new BitmapImage(new Uri(image.ImageUrl));
+            }
+            else if (image.GetImageStreamCallback != null)
+            {
+                var bitmap = new BitmapImage();
+                var _ = bitmap.SetSourceAsync((await image.GetImageStreamCallback()).AsRandomAccessStream());
+                OverlayPresenter.Source = bitmap;
+            }
 
-                ImageAnalyzer image = new ImageAnalyzer((string)this.favoritePhotosGridView.SelectedValue);
-                image.ShowDialogOnFaceApiErrors = true;
+            await this.UpdateActivePhoto(image);
+        }
 
-                this.imageWithFacesControl.Visibility = Visibility.Visible;
-                this.webCamHostGrid.Visibility = Visibility.Collapsed;
-                await this.cameraControl.StopStreamAsync();
+        private void UpdateOcrTextBoxContent(ImageAnalyzer imageAnalyzer)
+        {
+            //convert results to OverlayInfo
+            OcrLines = imageAnalyzer.TextOperationResult.Lines.Select(i => i.Words.Select(e => new TextOverlayInfo(e.Text, e.BoundingBox) { IsMuted = true }).ToArray()).ToArray();
+            OverlayPresenter.TextInfo = OcrLines.SelectMany(i => i).ToArray();
 
-                this.UpdateActivePhoto(image);
+            //update summaries
+            TextTab.Summary = SummaryBuilder((OcrLines?.Sum(i => i.Count), "word", "words"));
 
-                this.imageWithFacesControl.DataContext = image;
+            //update muted items
+            SetMute(SelectedTab);
+
+            Processing.IsActive = false;
+        }
+
+        void SetMute(PivotItem selectedPivot)
+        {
+            SetMute(selectedPivot.Header as TabHeader);
+        }
+
+        void SetMute(TabHeader selectedTab)
+        {
+            if (selectedTab == SummaryTab)
+            {
+                SetMute(OcrLines, true);
+                SetMute(Celebrities, true);
+                SetMute(Faces, true);
+                SetMute(Objects, true);
+                SetMute(Brands, true);
+            }
+
+            else if (selectedTab == FacesTab)
+            {
+                SetMute(OcrLines, true);
+                SetMute(Celebrities, false);
+                SetMute(Faces, false);
+                SetMute(Objects, true);
+                SetMute(Brands, true);
+            }
+
+            else if (selectedTab == ObjectsTab)
+            {
+                SetMute(OcrLines, true);
+                SetMute(Celebrities, true);
+                SetMute(Faces, true);
+                SetMute(Objects, false);
+                SetMute(Brands, false);
+            }
+
+            else if (selectedTab == TextTab)
+            {
+                SetMute(OcrLines, false);
+                SetMute(Celebrities, true);
+                SetMute(Faces, true);
+                SetMute(Objects, true);
+                SetMute(Brands, true);
             }
         }
 
-        private void OnOCRToggled(object sender, RoutedEventArgs e)
+        void SetMute(IEnumerable<IOverlayInfo> entities, bool mute)
         {
-            var currentImageDisplay = this.imageWithFacesControl.Visibility == Visibility.Visible ? this.imageWithFacesControl : this.imageFromCameraWithFaces;
-            if (currentImageDisplay.DataContext != null)
+            //validate
+            if (entities == null)
             {
-                var img = currentImageDisplay.DataContext;
-                currentImageDisplay.DataContext = null;
-                currentImageDisplay.DataContext = img;
+                return;
+            }
+
+            foreach (var entity in entities)
+            {
+                entity.IsMuted = mute;
+            }
+        }
+
+        void SetMute(IEnumerable<IEnumerable<IOverlayInfo>> entities, bool mute)
+        {
+            //validate
+            if (entities == null)
+            {
+                return;
+            }
+
+            foreach (var entity in entities)
+            {
+                SetMute(entity, mute);
+            }
+        }
+
+        void OnPropertyChanged([CallerMemberName] string propertyName = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+        bool SetProperty<T>(ref T storage, T value, [CallerMemberName] String propertyName = null)
+        {
+            if (Equals(storage, value))
+            {
+                return false;
+            }
+
+            storage = value;
+            OnPropertyChanged(propertyName);
+            return true;
+        }
+
+        private void CopyOcrLines(object sender, RoutedEventArgs e)
+        {
+            if (OcrLines != null)
+            {
+                //get OCR text
+                var ocrText = new StringBuilder();
+                foreach (var line in OcrLines)
+                {
+                    ocrText.AppendLine(string.Join(" ", line.Select(i => i.EntityExt.Name)));
+                }
+
+                //send text to clipboard
+                var dataPackage = new DataPackage();
+                dataPackage.SetText(ocrText.ToString());
+                Clipboard.SetContent(dataPackage);
+            }
+
+        }
+
+        private void Summary_PointerEntered(object sender, Windows.UI.Xaml.Input.PointerRoutedEventArgs e)
+        {
+            //highlight
+            var border = sender as Border;
+            var tab = border?.Tag as TabHeader;
+            if (tab != null && tab.Summary != NoneDesc)
+            {
+                border.BorderBrush = new SolidColorBrush(Colors.White);
+                SetMute(tab);
+            }
+
+        }
+
+        private void Summary_PointerExited(object sender, Windows.UI.Xaml.Input.PointerRoutedEventArgs e)
+        {
+            //unhighlight
+            var border = sender as Border;
+            var tab = border?.Tag as TabHeader;
+            if (tab != null && tab.Summary != NoneDesc)
+            {
+                border.BorderBrush = new SolidColorBrush(Colors.Transparent);
+                SetMute(SelectedTab);
             }
         }
     }

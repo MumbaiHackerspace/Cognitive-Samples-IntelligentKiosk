@@ -1,14 +1,45 @@
-﻿using ServiceHelpers;
+﻿// 
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license.
+// 
+// Microsoft Cognitive Services: http://www.microsoft.com/cognitive
+// 
+// Microsoft Cognitive Services Github:
+// https://github.com/Microsoft/Cognitive
+// 
+// Copyright (c) Microsoft Corporation
+// All rights reserved.
+// 
+// MIT License:
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to
+// the following conditions:
+// 
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED ""AS IS"", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+// 
+
+using Azure.AI.TextAnalytics;
+using ServiceHelpers;
 using System;
-using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Windows.Media.SpeechRecognition;
 using Windows.UI.Popups;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
-
-// The User Control item template is documented at http://go.microsoft.com/fwlink/?LinkId=234236
 
 namespace IntelligentKioskSample.Controls
 {
@@ -141,22 +172,24 @@ namespace IntelligentKioskSample.Controls
             {
                 this.speechRecognitionControlButton.Focus(FocusState.Programmatic);
                 await StartSpeechRecognition();
-            } catch (Exception ex)
+            }
+            catch (Exception ex) when ((uint)ex.HResult == HResultPrivacyStatementDeclined)
             {
-                if ((uint)ex.HResult == HResultPrivacyStatementDeclined)
-                {
-                    await Util.ConfirmActionAndExecute(
-                        "The Speech Privacy settings need to be enabled. Under 'Settings->Privacy->Speech, inking and typing', ensure you have viewed the privacy policy, and 'Get To Know You' is enabled. Want to open the settings now?",
-                        async () =>
-                        {
-                            // Open the privacy/speech, inking, and typing settings page.
-                            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:privacy-speechtyping"));
-                        });
-                }
-                else
-                {
-                    await Util.GenericApiCallExceptionHandler(ex, "Error starting SpeechRecognizer.");
-                }
+                await Util.ConfirmActionAndExecute(
+                    "The Speech Privacy settings need to be enabled. Under 'Settings->Privacy->Speech', ensure you have enabled 'Online speech recognition'. Want to open the settings now?",
+                    async () =>
+                    {
+                        // Open the privacy/speech settings page.
+                        await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:privacy-speech"));
+                    });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                await new DeviceAccessErrorDialog() { DeviceName = "microphone" }.ShowAsync();
+            }
+            catch (Exception ex)
+            {
+                await Util.GenericApiCallExceptionHandler(ex, "Error starting SpeechRecognizer.");
             }
         }
 
@@ -187,6 +220,7 @@ namespace IntelligentKioskSample.Controls
 
             this.speechRecognitionTextBox.Text = "";
             this.speechRecognitionTextBox.PlaceholderText = "Listening...";
+
             this.dictatedTextBuilder.Clear();
             this.sentimentControl.Sentiment = 0.5;
 
@@ -241,9 +275,8 @@ namespace IntelligentKioskSample.Controls
             {
                 if (!string.IsNullOrEmpty(this.speechRecognitionTextBox.Text))
                 {
-                    SentimentResult textAnalysisResult = await TextAnalyticsHelper.GetTextSentimentAsync(new string[] { this.speechRecognitionTextBox.Text });
-                    double score = textAnalysisResult.Scores.ElementAt(0);
-                    this.sentimentControl.Sentiment = score;
+                    DocumentSentiment textAnalysisResult = await TextAnalyticsHelper.AnalyzeSentimentAsync(this.speechRecognitionTextBox.Text);
+                    this.sentimentControl.Sentiment = GetSentimentScore(textAnalysisResult);
                 }
                 else
                 {
@@ -258,12 +291,25 @@ namespace IntelligentKioskSample.Controls
             }
         }
 
+        private double GetSentimentScore(DocumentSentiment sentiment)
+        {
+            switch (sentiment.Sentiment)
+            {
+                case TextSentiment.Positive:
+                    return sentiment.ConfidenceScores.Positive;
+                case TextSentiment.Neutral:
+                    return sentiment.ConfidenceScores.Neutral;
+                case TextSentiment.Negative:
+                    return 1 - sentiment.ConfidenceScores.Negative;
+                case TextSentiment.Mixed:
+                default:
+                    return 0.5;
+            }
+        }
+
         private void OnSpeechRecognitionAndSentimentProcessed(SpeechRecognitionAndSentimentResult result)
         {
-            if (this.SpeechRecognitionAndSentimentProcessed != null)
-            {
-                this.SpeechRecognitionAndSentimentProcessed(this, result);
-            }
+            this.SpeechRecognitionAndSentimentProcessed?.Invoke(this, result);
         }
 
         #endregion
